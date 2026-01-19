@@ -112,6 +112,9 @@ def is_valid_unknown_domain_mode(value):
     valid_modes = {"hold_manager", "hold_apps", "hold_both"}
     return value.strip() in valid_modes
 
+def is_urgent_watchdog_disabled(overrides):
+    return bool(overrides.get("disable_urgent_watchdog", False))
+
 def get_override_addr(overrides, key):
     if not isinstance(overrides, dict):
         return None
@@ -131,7 +134,8 @@ ALLOWED_OVERRIDES = {
     "completion_cc_addr": is_valid_completion_cc,
     "apps_cc_addr": is_valid_email,
     "manager_cc_addr": is_valid_email,
-    "unknown_domain_mode": is_valid_unknown_domain_mode
+    "unknown_domain_mode": is_valid_unknown_domain_mode,
+    "disable_urgent_watchdog": lambda v: isinstance(v, bool)
 }
 
 # ==================== SAFE_MODE ====================
@@ -1121,17 +1125,26 @@ def maybe_rotate_daily_stats_to_new_schema():
         log(f"CSV_SCHEMA_ROTATE_FAILED error={e}", "ERROR")
 
 # ==================== WATCHDOG OPERATIONS ====================
-def load_watchdog():
+def load_watchdog(overrides):
     """Load urgent watchdog from JSON"""
+    if is_urgent_watchdog_disabled(overrides):
+        log("URGENT_WATCHDOG_DISABLED_SKIP", "INFO")
+        return {}
     return safe_load_json(FILES["watchdog"], {}, required=False, state_name="urgent_watchdog")
 
-def save_watchdog(data):
+def save_watchdog(data, overrides):
     """Save urgent watchdog to JSON"""
+    if is_urgent_watchdog_disabled(overrides):
+        log("URGENT_WATCHDOG_DISABLED_SKIP", "INFO")
+        return
     atomic_write_json(FILES["watchdog"], data, state_name="urgent_watchdog")
 
-def add_to_watchdog(msg_id, subject, assigned_to, sender, risk_type):
+def add_to_watchdog(msg_id, subject, assigned_to, sender, risk_type, overrides):
     """Add urgent ticket to watchdog"""
-    watchdog = load_watchdog()
+    if is_urgent_watchdog_disabled(overrides):
+        log("URGENT_WATCHDOG_DISABLED_SKIP", "INFO")
+        return
+    watchdog = load_watchdog(overrides)
     watchdog[msg_id] = {
         "subject": subject[:100],
         "assigned_to": assigned_to,
@@ -1140,15 +1153,18 @@ def add_to_watchdog(msg_id, subject, assigned_to, sender, risk_type):
         "timestamp": datetime.now().isoformat(),
         "escalation_count": 0
     }
-    save_watchdog(watchdog)
+    save_watchdog(watchdog, overrides)
     log(f"WATCHDOG_ADDED msg_id={msg_id}", "CRITICAL")
 
-def remove_from_watchdog(msg_id):
+def remove_from_watchdog(msg_id, overrides):
     """Remove completed ticket from watchdog"""
-    watchdog = load_watchdog()
+    if is_urgent_watchdog_disabled(overrides):
+        log("URGENT_WATCHDOG_DISABLED_SKIP", "INFO")
+        return
+    watchdog = load_watchdog(overrides)
     if msg_id in watchdog:
         del watchdog[msg_id]
-        save_watchdog(watchdog)
+        save_watchdog(watchdog, overrides)
         log(f"✅ Removed from watchdog: {msg_id}", "SUCCESS")
 
 # ==================== RISK DETECTION ====================
@@ -1245,13 +1261,16 @@ def build_unknown_notice_block():
     )
 
 # ==================== SLA WATCHDOG CHECK ====================
-def check_sla_breaches():
+def check_sla_breaches(overrides):
     """
     Review-only mode: SLA enforcement disabled.
     """
+    if is_urgent_watchdog_disabled(overrides):
+        log("URGENT_WATCHDOG_DISABLED_SKIP", "INFO")
+        return
     log("SLA_WATCHDOG_DISABLED review_only=true", "INFO")
     return
-    watchdog = load_watchdog()
+    watchdog = load_watchdog(overrides)
     if not watchdog:
         return
     
@@ -1294,7 +1313,7 @@ def check_sla_breaches():
         except Exception as e:
             log(f"Error checking SLA for {msg_id}: {e}", "ERROR")
     
-    save_watchdog(watchdog)
+    save_watchdog(watchdog, overrides)
 
 def escalate_to_manager(ticket, elapsed):
     """Send escalation email to manager"""
@@ -1333,6 +1352,8 @@ def process_inbox():
         applied_keys = [k for k, v in overrides.items() if v != CONFIG.get(k)]
         if applied_keys:
             log(f"OVERRIDE_APPLIED keys={','.join(sorted(applied_keys))}", "INFO")
+    if is_urgent_watchdog_disabled(overrides):
+        log("URGENT_WATCHDOG_DISABLED", "INFO")
 
     # Load domain policy
     domain_policy, policy_valid = load_domain_policy()
@@ -1995,7 +2016,7 @@ def process_inbox():
                             )
                             fwd.Body = risk_banner + (original_body or "")
                         # Add to watchdog review register
-                        add_to_watchdog(msg_id, subject, assignee, sender_email, risk_reason)
+                        add_to_watchdog(msg_id, subject, assignee, sender_email, risk_reason, overrides)
                     else:
                         if action_taken not in ("hib_noise_suppressed", "UNKNOWN_DOMAIN"):
                             fwd.Body = f"--- \U0001F3E5 AUTO-ASSIGNED TO {assignee} ---\n\n" + fwd.Body
@@ -2124,8 +2145,10 @@ if __name__ == "__main__":
     log("=" * 60)
 
     # Initialize watchdog file if needed
-    if not os.path.exists(FILES["watchdog"]):
-        save_watchdog({})
+    if is_urgent_watchdog_disabled(overrides):
+        log("URGENT_WATCHDOG_DISABLED_SKIP", "INFO")
+    elif not os.path.exists(FILES["watchdog"]):
+        save_watchdog({}, overrides)
         log("Initialized empty watchdog file")
 
     # Rotate daily_stats.csv to new schema if needed
