@@ -563,6 +563,7 @@ for col in ["Risk Level", "Subject", "Assigned To", "Sender"]:
 df_today_kpi = df_today[~heartbeat_mask].copy()
 total_today = len(df_today_kpi)
 assigned_today = len(df_today_kpi[df_today_kpi['Assigned To'] != 'completed'])
+completions_today = dashboard_core.compute_completions_today(df_today_kpi, datetime.now())
 configured_staff = len(staff_list)
 next_idx = roster_state.get('current_index', 0) % len(staff_list) if staff_list else 0
 next_staff = staff_list[next_idx] if staff_list else 'N/A'
@@ -577,12 +578,14 @@ if 'DateTime' in df.columns and len(df) > 0:
 status_label = 'OK' if total_today > 0 else 'Attention'
 status_color = '#10b981' if total_today > 0 else '#f59e0b'
 st.markdown(f"**Status:** :green[{status_label}]" if total_today > 0 else f"**Status:** :orange[{status_label}]")
-col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
 with col_m1:
     st.metric('Processed today', total_today)
 with col_m2:
     st.metric('Assigned today', assigned_today)
 with col_m3:
+    st.metric('Completions today', completions_today)
+with col_m4:
     st.metric('Configured staff', configured_staff)
     if st.button("Edit staff list (staff.txt)", use_container_width=True):
         try:
@@ -595,7 +598,7 @@ with col_m3:
         except Exception as e:
             st.error(f"Unable to open staff.txt: {e}")
     st.caption("Opens staff.txt. One email per line. Save; service reads on next tick.")
-with col_m4:
+with col_m5:
     st.metric('Next assignment', next_staff.split('@')[0] if next_staff != 'N/A' else 'N/A')
 st.caption(f"Last update: {last_update}")
 # ==================== OPERATIONS SNAPSHOT ====================
@@ -813,20 +816,62 @@ processed_override = st.text_input(
     help="If empty, the service uses its configured default.",
     value=current_overrides.get("processed_folder", "")
 )
+apps_cc_override = st.text_input(
+    "Apps CC (visibility)",
+    help="If empty, the service uses its configured default. Multiple addresses may be separated with semicolons (;).",
+    value=current_overrides.get("apps_cc_addr", "")
+)
+manager_cc_override = st.text_input(
+    "Manager CC (visibility)",
+    help="If empty, the service uses its configured default. Multiple addresses may be separated with semicolons (;).",
+    value=current_overrides.get("manager_cc_addr", "")
+)
+st.caption("Visibility only. Primary assignment comes from staff.txt.")
+
+def validate_visibility_cc(label, value):
+    raw = "" if value is None else str(value)
+    if not raw.strip():
+        return "", None
+    if "\n" in raw or "\r" in raw:
+        return None, f"{label} must be a single line."
+    parts = [part.strip() for part in raw.split(";")]
+    for part in parts:
+        if not part:
+            return None, f"{label} entries must be non-empty."
+        if any(ch.isspace() for ch in part):
+            return None, f"{label} entries must not contain whitespace."
+        if "@" not in part:
+            return None, f"{label} entries must contain @."
+    return raw.strip(), None
 
 col_override_1, col_override_2 = st.columns(2)
 with col_override_1:
     if st.button("Save overrides", use_container_width=True):
-        new_overrides = {}
-        if inbox_override.strip():
-            new_overrides["inbox_folder"] = inbox_override.strip()
-        if processed_override.strip():
-            new_overrides["processed_folder"] = processed_override.strip()
-        ok, err = write_json_atomic(OVERRIDES_FILE, new_overrides)
-        if ok:
-            st.success("Overrides saved.")
+        errors = []
+        apps_cc_value, apps_cc_err = validate_visibility_cc("Apps CC (visibility)", apps_cc_override)
+        if apps_cc_err:
+            errors.append(apps_cc_err)
+        manager_cc_value, manager_cc_err = validate_visibility_cc("Manager CC (visibility)", manager_cc_override)
+        if manager_cc_err:
+            errors.append(manager_cc_err)
+        if errors:
+            for err in errors:
+                st.error(err)
         else:
-            st.error("Unable to save overrides.")
+            new_overrides = {}
+            if inbox_override.strip():
+                new_overrides["inbox_folder"] = inbox_override.strip()
+            if processed_override.strip():
+                new_overrides["processed_folder"] = processed_override.strip()
+            if apps_cc_value:
+                new_overrides["apps_cc_addr"] = apps_cc_value
+            if manager_cc_value:
+                new_overrides["manager_cc_addr"] = manager_cc_value
+            ok, err = write_json_atomic(OVERRIDES_FILE, new_overrides)
+            if ok:
+                st.success("Overrides saved.")
+            else:
+                st.error("Unable to save overrides.")
 with col_override_2:
     if st.button("Clear overrides", use_container_width=True):
         ok, err = write_json_atomic(OVERRIDES_FILE, {})

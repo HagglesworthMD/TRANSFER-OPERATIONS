@@ -1,0 +1,65 @@
+{
+  "internal_domains": [
+    "sa.gov.au"
+  ],
+  "external_image_request_domains": [
+    "bensonradiology.com.au",
+    "jonesradiology.com.au",
+    "radiologysa.com.au",
+    "drjones.com.au",
+    "i-med.com.au"
+  ],
+  "system_notification_domains": [
+    "jonesradiology.atlassian.net",
+    "service-now.com",
+    "health.telstra.com",
+    "google.com",
+    "healthlink.net",
+    "zedtechnologies.com.au",
+    "carestream.com",
+    "materialise.com",
+    "stryker.com",
+    "klsmartin.com",
+    "imagingsol.com.au",
+    "its.jnj.com",
+    "everlightradiology.com",
+    "philips.com"
+  ],
+  "sami_support_staff": [
+    "christina.carroll@sa.gov.au",
+    "hannah.cutting@sa.gov.au",
+    "deepak.devarapalli@sa.gov.au",
+    "john.drousas@sa.gov.au",
+    "debbie.fowell@sa.gov.au",
+    "ajumeet.kaur@sa.gov.au",
+    "prav.mudaliar@sa.gov.au",
+    "kerry.murphy@sa.gov.au",
+    "muiru.mutuota@sa.gov.au",
+    "gioia.perre@sa.gov.au",
+    "craig.ravlich@sa.gov.au",
+    "brian.shaw@sa.gov.au"
+  ],
+  "apps_specialists": [
+    "tony.penna@sa.gov.au",
+    "kate.cook@sa.gov.au"
+  ],
+  "manager_email": "Jason.quinn2@sa.gov.au",
+  "always_hold_domains": [],
+  "hib_noise": {
+    "sender_equals": "image.health@sa.gov.au",
+    "subject_contains_all": [
+      "ESMI"
+    ],
+    "subject_contains_any": [
+      "MRN not supplied",
+      "IMGProduction",
+      "ESMIToOtherMRN"
+    ],
+    "route": "hib_noise",
+    "suppress_rr": true,
+    "notify_apps": true,
+    "notify_manager": true,
+    "move_to": "processed"
+  },
+  "notes": "Authoritative routing policy for TRANSFER-BOT with Class 1 external image requests, SAMI completion authorities, Class 3 system notifications"
+}

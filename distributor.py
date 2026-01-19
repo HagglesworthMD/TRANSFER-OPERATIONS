@@ -19,6 +19,7 @@ import schedule
 import atexit
 import subprocess
 import re
+from urllib.parse import quote
 from datetime import datetime, timedelta
 
 # Windows-specific imports (graceful fallback for Linux/Mac)
@@ -54,8 +55,11 @@ PROCESSED_LEDGER_PATH = "processed_ledger.json"
 POISON_COUNTS_PATH = "poison_counts.json"
 LOCK_PATH = "bot.lock"
 SETTINGS_OVERRIDES_PATH = "settings_overrides.json"
+DOMAIN_POLICY_PATH = "domain_policy.json"
 STAFF_PATH = os.path.join(os.path.dirname(__file__), "staff.txt")
 COMPLETION_CC_ADDR = "completion.placeholder@example.invalid"
+SAMI_SHARED_INBOX = "health.samisupportteam@sa.gov.au"
+COMPLETION_SUBJECT_KEYWORD = "[COMPLETED]"
 HEARTBEAT_INTERVAL_SECONDS = 300
 
 def is_valid_completion_cc(value):
@@ -73,11 +77,79 @@ def is_valid_completion_cc(value):
         return False
     return True
 
+def is_valid_email(value):
+    """Validate email address format (for apps_cc_addr, manager_cc_addr)"""
+    if not isinstance(value, str):
+        return False
+    raw = value.strip()
+    if not raw:
+        return False
+    parts = [part.strip() for part in raw.split(";")]
+    for part in parts:
+        if not part:
+            return False
+        if any(ch.isspace() for ch in part):
+            return False
+        if len(part) < 6 or len(part) > 254:
+            return False
+        if part.count("@") != 1:
+            return False
+        local, domain = part.split("@")
+        if not local or not domain:
+            return False
+        if "." not in domain:
+            return False
+    return True
+
+def is_valid_unknown_domain_mode(value):
+    """Validate unknown_domain_mode enum"""
+    if not isinstance(value, str):
+        return False
+    valid_modes = {"hold_manager", "hold_apps", "hold_both"}
+    return value.strip() in valid_modes
+
 ALLOWED_OVERRIDES = {
     "inbox_folder": lambda v: isinstance(v, str) and v.strip(),
     "processed_folder": lambda v: isinstance(v, str) and v.strip(),
-    "completion_cc_addr": is_valid_completion_cc
+    "completion_cc_addr": is_valid_completion_cc,
+    "apps_cc_addr": is_valid_email,
+    "manager_cc_addr": is_valid_email,
+    "unknown_domain_mode": is_valid_unknown_domain_mode
 }
+
+# ==================== SAFE_MODE ====================
+def is_safe_mode():
+    """
+    Check if SAFE_MODE is active (prevents sending emails).
+
+    Returns: (is_safe, reason)
+        is_safe: True if SAFE_MODE active (no sending)
+        reason: String explaining why SAFE_MODE is active
+    """
+    # Check environment variable
+    env_value = os.environ.get("TRANSFER_BOT_LIVE", "").strip().lower()
+    if env_value != "true":
+        return (True, "env_missing")
+
+    # Belt-and-suspenders: refuse to send if inbox folder contains "test"
+    inbox_folder = CONFIG.get("inbox_folder", "")
+    if "test" in inbox_folder.lower():
+        return (True, "test_folder")
+
+    # All checks passed - live mode armed
+    return (False, "live_mode_armed")
+
+def log_safe_mode_status():
+    """Log SAFE_MODE status at startup"""
+    is_safe, reason = is_safe_mode()
+    if is_safe:
+        if reason == "env_missing":
+            log("SAFE_MODE_ACTIVE reason=env_missing (TRANSFER_BOT_LIVE not set to 'true')", "WARN")
+        elif reason == "test_folder":
+            log(f"SAFE_MODE_ACTIVE reason=test_folder inbox_folder={CONFIG.get('inbox_folder', '')}", "WARN")
+        log("*** NO EMAILS WILL BE SENT IN SAFE_MODE ***", "WARN")
+    else:
+        log("LIVE_MODE_ARMED - emails will be sent", "WARN")
 
 # ==================== SEMANTIC DICTIONARY ====================
 # Risk Detection: (Action + Context) OR (Urgency + Action) OR (High Importance)
@@ -132,6 +204,31 @@ def strip_bot_subject_tags(subject):
         cleaned = _re_critical.sub("", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
+
+def is_completion_subject(subject):
+    if not subject:
+        return False
+    return COMPLETION_SUBJECT_KEYWORD.lower() in str(subject).lower()
+
+def build_completion_mailto(to_addr, cc_addr, subject):
+    to_value = str(to_addr).strip() if to_addr else ""
+    if not to_value or "@" not in to_value:
+        return ""
+    cc_value = str(cc_addr).strip() if cc_addr else ""
+    subject_value = "" if subject is None else str(subject)
+    params = []
+    if cc_value:
+        params.append(f"cc={cc_value}")
+    params.append(f"subject={quote(subject_value)}")
+    return f"mailto:{to_value}?{'&'.join(params)}"
+
+def prepend_completion_hotlink_html(html, mailto_url):
+    html_notice = (
+        '<p><b>✅ Mark job complete:</b> '
+        f'<a href="{mailto_url}">Click to notify requester (CC SAMI)</a></p>'
+        "<hr/>"
+    )
+    return html_notice + (html or "")
 
 def extract_subject_from_body(body_text):
     if not body_text:
@@ -212,12 +309,15 @@ def compute_message_identity(msg, sender_email, subject, received_iso):
 
 # ==================== LOGGING ====================
 def log(msg, level="INFO"):
-    """Timestamped logging"""
+    """Timestamped logging (encoding-safe for Windows console)"""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    symbol = {"INFO": "ℹ️", "WARN": "⚠️", "ERROR": "❌", "CRITICAL": "🚨", "SUCCESS": "✅"}.get(level, "📝")
-    print(f"[{timestamp}] {symbol} {msg}")
-    
-    # Also append to log file
+    # ASCII-only symbols to prevent Windows console encoding crashes
+    symbol = {"INFO": "[INFO]", "WARN": "[WARN]", "ERROR": "[ERROR]", "CRITICAL": "[CRIT]", "SUCCESS": "[OK]"}.get(level, "[LOG]")
+    # Sanitize message to ASCII to prevent encoding crashes
+    safe_msg = str(msg).encode("ascii", "backslashreplace").decode("ascii")
+    print(f"[{timestamp}] {symbol} {safe_msg}")
+
+    # Also append to log file (UTF-8 safe)
     try:
         with open("bot_activity.log", "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}] [{level}] {msg}\n")
@@ -236,7 +336,10 @@ def maybe_emit_heartbeat(mailbox, inbox_folder, processed_folder):
             f"HEARTBEAT mailbox={mailbox} inbox={inbox_folder} processed={processed_folder}",
             "bot",
             "system",
-            "HEARTBEAT"
+            "HEARTBEAT",
+            "",
+            "HEARTBEAT",
+            ""
         )
         _last_heartbeat_ts = now_ts
 
@@ -486,13 +589,135 @@ def load_settings_overrides(path):
         if not validator(value):
             log(f"OVERRIDE_REJECT key={key} reason=invalid_value", "WARN")
             continue
-        if key == "completion_cc_addr":
-            log("OVERRIDE_ACCEPT key=completion_cc_addr value=set", "INFO")
+        # Never log addresses; log only "value=set"
+        if key in ("completion_cc_addr", "apps_cc_addr", "manager_cc_addr"):
+            log(f"OVERRIDE_ACCEPT key={key} value=set", "INFO")
             accepted[key] = value.strip()
         else:
             log(f"OVERRIDE_ACCEPT key={key} value={value}", "INFO")
             accepted[key] = value
     return accepted
+
+def load_domain_policy(path=None):
+    """
+    Load and validate domain policy.
+    If missing/invalid, fail safe: treat non-internal as unknown/hold and log POLICY_INVALID.
+
+    Returns: (policy_dict, is_valid)
+    """
+    if path is None:
+        path = DOMAIN_POLICY_PATH
+
+    policy = safe_load_json(path, None, required=False, state_name="domain_policy")
+
+    # Validate structure
+    if policy is None or not isinstance(policy, dict):
+        log("POLICY_INVALID reason=missing_or_corrupt path=" + path, "ERROR")
+        return {
+            "internal_domains": [],
+            "vendor_domains": [],
+            "always_hold_domains": []
+        }, False
+
+    # Validate required keys (minimal set for backward compatibility)
+    required_keys = {"internal_domains"}
+    if not required_keys.issubset(policy.keys()):
+        log("POLICY_INVALID reason=missing_keys path=" + path, "ERROR")
+        return {
+            "internal_domains": [],
+            "external_image_request_domains": [],
+            "system_notification_domains": [],
+            "sami_support_staff": [],
+            "apps_specialists": [],
+            "manager_email": "",
+            "always_hold_domains": []
+        }, False
+
+    # Validate types for all list fields
+    list_fields = [
+        "internal_domains",
+        "external_image_request_domains",
+        "system_notification_domains",
+        "sami_support_staff",
+        "apps_specialists",
+        "always_hold_domains"
+    ]
+    for key in list_fields:
+        if key in policy and not isinstance(policy[key], list):
+            log(f"POLICY_INVALID reason=key_not_list key={key} path=" + path, "ERROR")
+            return {
+                "internal_domains": [],
+                "external_image_request_domains": [],
+                "system_notification_domains": [],
+                "sami_support_staff": [],
+                "apps_specialists": [],
+                "manager_email": "",
+                "always_hold_domains": []
+            }, False
+
+    # Ensure all optional fields have defaults
+    if "external_image_request_domains" not in policy:
+        policy["external_image_request_domains"] = []
+    if "system_notification_domains" not in policy:
+        policy["system_notification_domains"] = []
+    if "sami_support_staff" not in policy:
+        policy["sami_support_staff"] = []
+    if "apps_specialists" not in policy:
+        policy["apps_specialists"] = []
+    if "manager_email" not in policy:
+        policy["manager_email"] = ""
+    if "always_hold_domains" not in policy:
+        policy["always_hold_domains"] = []
+
+    log(f"POLICY_LOADED path={path}", "INFO")
+    return policy, True
+
+def classify_sender_domain(domain, policy):
+    """
+    Classify sender domain based on policy.
+
+    Returns: external_image_request | system_notification | internal | hold | unknown
+    """
+    if not domain:
+        return "unknown"
+
+    domain_lower = domain.lower().strip()
+
+    # Check external image request domains (Class 1)
+    external_image_domains = [d.lower().strip() for d in policy.get("external_image_request_domains", [])]
+    if domain_lower in external_image_domains:
+        return "external_image_request"
+
+    # Check system notification domains (Class 3)
+    system_notification_domains = [d.lower().strip() for d in policy.get("system_notification_domains", [])]
+    if domain_lower in system_notification_domains:
+        return "system_notification"
+
+    # Check internal domains
+    internal_domains = [d.lower().strip() for d in policy.get("internal_domains", [])]
+    if domain_lower in internal_domains:
+        return "internal"
+
+    # Check always hold domains
+    hold_domains = [d.lower().strip() for d in policy.get("always_hold_domains", [])]
+    if domain_lower in hold_domains:
+        return "hold"
+
+    # Unknown domain
+    return "unknown"
+
+def is_sami_support_staff(sender_email, policy):
+    """
+    Check if sender is in SAMI support staff list (completion authorities).
+    Returns True if sender is SAMI staff, False otherwise.
+    """
+    if not sender_email:
+        return False
+
+    sender_lower = sender_email.lower().strip()
+    sami_staff = [email.lower().strip() for email in policy.get("sami_support_staff", [])]
+
+    return sender_lower in sami_staff
 
 def get_roster_state():
     """Load roster state from JSON"""
@@ -577,25 +802,141 @@ def get_next_staff():
     
     return person
 
-def append_stats(subject, assigned_to, sender="unknown", risk_level="normal"):
-    """Append entry to daily stats CSV"""
+def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", domain_bucket="", action="", policy_source=""):
+    """Append entry to daily stats CSV (backward compatible with old 6-col schema)"""
     try:
         file_exists = os.path.isfile(FILES["log"])
+
+        # Determine column count from existing file header
+        use_old_schema = False
+        if file_exists:
+            try:
+                with open(FILES["log"], 'r', encoding='utf-8') as f:
+                    first_line = f.readline().strip()
+                    if first_line:
+                        col_count = len(first_line.split(','))
+                        use_old_schema = (col_count <= 6)
+            except Exception:
+                pass
+
         with open(FILES["log"], 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             if not file_exists:
-                writer.writerow(['Date', 'Time', 'Subject', 'Assigned To', 'Sender', 'Risk Level'])
+                # New file: write new 9-column header
+                writer.writerow([
+                    'Date', 'Time', 'Subject', 'Assigned To', 'Sender', 'Risk Level',
+                    'Domain Bucket', 'Action', 'Policy Source'
+                ])
+                use_old_schema = False
+
             now = datetime.now()
-            writer.writerow([
-                now.strftime('%Y-%m-%d'),
-                now.strftime('%H:%M:%S'),
-                subject,
-                assigned_to,
-                sender,
-                risk_level
-            ])
+
+            if use_old_schema:
+                # Old schema: write only 6 fields (backward compatible)
+                writer.writerow([
+                    now.strftime('%Y-%m-%d'),
+                    now.strftime('%H:%M:%S'),
+                    subject,
+                    assigned_to,
+                    sender,
+                    risk_level
+                ])
+            else:
+                # New schema: write all 9 fields
+                writer.writerow([
+                    now.strftime('%Y-%m-%d'),
+                    now.strftime('%H:%M:%S'),
+                    subject,
+                    assigned_to,
+                    sender,
+                    risk_level,
+                    domain_bucket,
+                    action,
+                    policy_source
+                ])
     except Exception as e:
         log(f"Error writing stats: {e}", "ERROR")
+
+def maybe_rotate_daily_stats_to_new_schema():
+    """
+    Safe CSV schema rotation: if existing daily_stats.csv has old 6-col header,
+    archive it and create fresh file with new 9-col header.
+    Preserves all existing data. No rewrites.
+    """
+    log_path = FILES["log"]
+
+    # Check if file exists
+    if not os.path.exists(log_path):
+        log("CSV_SCHEMA_CHECK file_not_found", "INFO")
+        return
+
+    try:
+        # Read first line to check schema
+        with open(log_path, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+
+        if not first_line:
+            log("CSV_SCHEMA_CHECK file_empty", "INFO")
+            return
+
+        # Determine column count
+        col_count = len(first_line.split(','))
+
+        if col_count > 6:
+            # Already on new schema
+            log(f"CSV_SCHEMA_CHECK current_cols={col_count} status=already_new", "INFO")
+            return
+
+        # Old schema detected, need to rotate
+        log(f"CSV_SCHEMA_ROTATE old_cols={col_count} action=archiving", "WARN")
+
+        # Find available archive filename (deterministic, no timestamps)
+        log_dir = os.path.dirname(log_path) or "."
+        log_basename = os.path.basename(log_path).replace('.csv', '')
+
+        archive_path = None
+        for i in range(1, 1000):
+            candidate = os.path.join(log_dir, f"{log_basename}_legacy_{i}.csv")
+            if not os.path.exists(candidate):
+                archive_path = candidate
+                break
+
+        if not archive_path:
+            log("CSV_SCHEMA_ROTATE error=no_available_archive_name", "ERROR")
+            return
+
+        # Atomic rename old file to archive
+        os.replace(log_path, archive_path)
+        log(f"CSV_SCHEMA_ROTATE archived={os.path.basename(archive_path)}", "INFO")
+
+        # Create new file with 9-column header (atomic write)
+        temp_path = log_path + ".tmp"
+        try:
+            with open(temp_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'Date', 'Time', 'Subject', 'Assigned To', 'Sender', 'Risk Level',
+                    'Domain Bucket', 'Action', 'Policy Source'
+                ])
+                f.flush()
+                os.fsync(f.fileno())
+
+            # Atomic replace
+            os.replace(temp_path, log_path)
+            log(f"CSV_SCHEMA_ROTATE old_cols=6 new_cols=9 archived={os.path.basename(archive_path)}", "WARN")
+
+        except Exception as e:
+            log(f"CSV_SCHEMA_ROTATE error={e}", "ERROR")
+            # Clean up temp file if it exists
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+            raise
+
+    except Exception as e:
+        log(f"CSV_SCHEMA_ROTATE_FAILED error={e}", "ERROR")
 
 # ==================== WATCHDOG OPERATIONS ====================
 def load_watchdog():
@@ -665,6 +1006,33 @@ def detect_risk(subject, body="", high_importance=False):
     return "normal", None
 
 # ==================== SMART FILTER ====================
+def extract_sender_domain(sender_email):
+    """
+    Extract domain from sender email address.
+    Handles: "Name <user@domain>" and bare "user@domain"
+    Returns domain or None
+    """
+    if not sender_email:
+        return None
+
+    email_str = str(sender_email).strip()
+
+    # Handle "Name <user@domain>" format
+    import re
+    match = re.search(r'<([^>]+)>', email_str)
+    if match:
+        email_str = match.group(1)
+
+    # Extract domain from email
+    if '@' in email_str:
+        try:
+            domain = email_str.split('@')[-1].strip().lower()
+            return domain if domain else None
+        except Exception:
+            return None
+
+    return None
+
 def is_internal_reply(sender_email, subject, staff_list):
     """
     Smart Filter: Only skip if:
@@ -672,12 +1040,27 @@ def is_internal_reply(sender_email, subject, staff_list):
     2. Subject indicates a REPLY (RE:, Accepted:, etc.) OR contains bot tags
     """
     is_staff = sender_email.lower() in staff_list
-    
+
     reply_prefixes = ('re:', 'accepted:', 'declined:', 'fw:', 'fwd:')
     is_reply = subject.lower().strip().startswith(reply_prefixes)
     is_bot_tagged = '[assigned:' in subject.lower() or '[completed:' in subject.lower()
-    
+
     return is_staff and (is_reply or is_bot_tagged)
+
+def build_unknown_notice_block():
+    return (
+        "\n\n"
+        "────────────────────────────────\n"
+        "Automated notice – action required\n\n"
+        "This message was held because the sender or domain is not currently approved.\n\n"
+        "If this sender/domain should be:\n"
+        "• approved for normal distribution, or\n"
+        "• routed to a specific team (e.g. Apps visibility), or\n"
+        "• left on hold,\n\n"
+        "please email the system administrator with your decision.\n\n"
+        "(Do not include patient or clinical information in your reply.)\n"
+        "────────────────────────────────\n"
+    )
 
 # ==================== SLA WATCHDOG CHECK ====================
 def check_sla_breaches():
@@ -720,7 +1103,10 @@ def check_sla_breaches():
                     f"[SLA_FAIL] {ticket['subject'][:50]}",
                     ticket["assigned_to"],
                     ticket["sender"],
-                    "SLA_BREACH"
+                    "SLA_BREACH",
+                    "",
+                    "SLA_BREACH",
+                    ""
                 )
                 
         except Exception as e:
@@ -765,6 +1151,22 @@ def process_inbox():
         applied_keys = [k for k, v in overrides.items() if v != CONFIG.get(k)]
         if applied_keys:
             log(f"OVERRIDE_APPLIED keys={','.join(sorted(applied_keys))}", "INFO")
+
+    # Load domain policy
+    domain_policy, policy_valid = load_domain_policy()
+    policy_source = "valid" if policy_valid else "invalid_fallback"
+    hib_noise_rule = domain_policy.get("hib_noise") if isinstance(domain_policy.get("hib_noise"), dict) else {}
+
+    # Extract domain routing settings from overrides
+    apps_cc_addr = overrides.get("apps_cc_addr")
+    manager_cc_addr = overrides.get("manager_cc_addr")
+    if isinstance(apps_cc_addr, str) and ";" in apps_cc_addr:
+        apps_cc_count = len([part for part in (p.strip() for p in apps_cc_addr.split(";")) if part])
+        log(f"CC_MULTI_RECIPIENTS key=apps_cc_addr count={apps_cc_count}", "INFO")
+    if isinstance(manager_cc_addr, str) and ";" in manager_cc_addr:
+        manager_cc_count = len([part for part in (p.strip() for p in manager_cc_addr.split(";")) if part])
+        log(f"CC_MULTI_RECIPIENTS key=manager_cc_addr count={manager_cc_count}", "INFO")
+    unknown_domain_mode = overrides.get("unknown_domain_mode", "hold_manager")
     completion_workflow_enabled = CONFIG.get("enable_completion_workflow", False)
     completion_cc_enabled = completion_workflow_enabled and CONFIG.get("enable_completion_cc", True)
     effective_completion_cc = overrides.get("completion_cc_addr", COMPLETION_CC_ADDR) if overrides else COMPLETION_CC_ADDR
@@ -930,7 +1332,11 @@ def process_inbox():
                         sender_email = msg.SenderEmailAddress.lower()
                     except:
                         sender_email = "unknown"
-                    
+
+                    # Extract and classify sender domain
+                    sender_domain = extract_sender_domain(sender_email)
+                    domain_bucket = classify_sender_domain(sender_domain, domain_policy) if sender_domain else "unknown"
+
                     try:
                         subject = msg.Subject.strip()
                     except:
@@ -971,9 +1377,61 @@ def process_inbox():
                         skipped_count += 1
                         continue
 
+                    hib_noise_match = False
+                    hib_cc_override = ""
+                    if hib_noise_rule:
+                        hib_sender = str(hib_noise_rule.get("sender_equals", "")).strip().lower()
+                        if hib_sender and sender_email == hib_sender:
+                            subject_lower = subject.lower()
+                            require_all = hib_noise_rule.get("subject_contains_all", [])
+                            require_any = hib_noise_rule.get("subject_contains_any", [])
+                            all_ok = all(term.lower() in subject_lower for term in require_all) if require_all else True
+                            any_ok = any(term.lower() in subject_lower for term in require_any) if require_any else False
+                            if all_ok and any_ok:
+                                hib_noise_match = True
+                    if hib_noise_match:
+                        log("HIB_NOISE_MATCH action=hib_noise_suppressed", "INFO")
+                        notify_apps = bool(hib_noise_rule.get("notify_apps", False))
+                        notify_manager = bool(hib_noise_rule.get("notify_manager", False))
+                        cc_value = ""
+                        if notify_apps and isinstance(apps_cc_addr, str) and apps_cc_addr.strip():
+                            cc_value = apps_cc_addr
+                        if notify_manager and isinstance(manager_cc_addr, str) and manager_cc_addr.strip():
+                            cc_value = f"{cc_value};{manager_cc_addr}" if cc_value else manager_cc_addr
+                        hib_cc_override = cc_value
+
                     # ===== COMPLETION DETECTION =====
                     try:
                         is_staff_sender = sender_email in staff_list
+                        keyword_hit = is_completion_subject(subject)
+                        if is_staff_sender and keyword_hit:
+                            if conversation_id:
+                                match_key = find_ledger_key_by_conversation_id(processed_ledger, conversation_id)
+                            else:
+                                match_key = None
+                            if match_key:
+                                entry = processed_ledger.get(match_key, {})
+                                entry["completed_at"] = datetime.now().isoformat()
+                                entry["completed_by"] = sender_email
+                                entry["completion_source"] = "subject_keyword"
+                                processed_ledger[match_key] = entry
+                                append_stats(
+                                    subject,
+                                    "completed",
+                                    sender_email,
+                                    "COMPLETION_MATCHED",
+                                    domain_bucket,
+                                    "COMPLETION_SUBJECT_KEYWORD",
+                                    policy_source
+                                )
+                                if not save_processed_ledger(processed_ledger):
+                                    log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
+                                    log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
+                                    return
+                                msg.UnRead = False
+                                msg.Move(processed)
+                                processed_count += 1
+                                continue
                         is_reply = subject.lower().strip().startswith("re:")
                         if completion_cc_enabled and is_staff_sender and is_reply and message_has_completion_cc(msg, effective_completion_cc):
                             if conversation_id:
@@ -987,9 +1445,9 @@ def process_inbox():
                                 entry["completion_source"] = "reply_all_cc"
                                 entry["completion_subject"] = subject
                                 processed_ledger[match_key] = entry
-                                append_stats(subject, "completed", sender_email, "COMPLETION_MATCHED")
+                                append_stats(subject, "completed", sender_email, "COMPLETION_MATCHED", domain_bucket, "COMPLETION_MATCHED", policy_source)
                             else:
-                                append_stats(subject, "completed", sender_email, "COMPLETION_UNMATCHED")
+                                append_stats(subject, "completed", sender_email, "COMPLETION_UNMATCHED", domain_bucket, "COMPLETION_UNMATCHED", policy_source)
                             if not save_processed_ledger(processed_ledger):
                                 log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
                                 log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
@@ -1000,7 +1458,7 @@ def process_inbox():
                             continue
                     except Exception as e:
                         log(f"COMPLETION_ERROR {e}", "ERROR")
-                        append_stats(subject, "completed", sender_email, "COMPLETION_ERROR")
+                        append_stats(subject, "completed", sender_email, "COMPLETION_ERROR", domain_bucket, "COMPLETION_ERROR", policy_source)
                         try:
                             msg.UnRead = False
                             msg.Move(processed)
@@ -1012,9 +1470,7 @@ def process_inbox():
                     # ===== SMART FILTER =====
                     if is_internal_reply(sender_email, subject, staff_list):
                         log(f"\u2705 Skipped internal reply from {sender_email}: {subject[:50]}...")
-                        msg.Subject = f"[COMPLETED: {sender_email}] {msg.Subject}"
-                        msg.Save()
-                        append_stats(msg.Subject, "completed", sender_email, "normal")
+                        append_stats(subject, "completed", sender_email, "normal", domain_bucket, "SMART_FILTER_COMPLETION", policy_source)
                         msg.UnRead = False
                         msg.Move(processed)
                         
@@ -1039,18 +1495,119 @@ def process_inbox():
                         continue
                     
                     # ===== RISK DETECTION =====
-                    risk_level, risk_reason = detect_risk(subject, body, high_importance)
-                    
-                    if risk_level != "normal":
-                        log(f"\u26A0\uFE0F Risk detected [{risk_level.upper()}]: {risk_reason}", "WARN")
-                    
-                    # ===== ROUND-ROBIN ASSIGNMENT =====
-                    assignee = get_next_staff()
+                    if hib_noise_match:
+                        risk_level = "normal"
+                        risk_reason = None
+                    else:
+                        risk_level, risk_reason = detect_risk(subject, body, high_importance)
+
+                        if risk_level != "normal":
+                            log(f"\u26A0\uFE0F Risk detected [{risk_level.upper()}]: {risk_reason}", "WARN")
+
+                    # ===== AUTHORITATIVE ROUTING POLICY =====
+                    action_taken = ""
+                    assignee = None
+                    hold_recipients = []
+                    cc_manager = False
+                    cc_apps = False
+                    is_completion = False
+
+                    # Get policy addresses
+                    policy_manager = domain_policy.get("manager_email", "")
+                    policy_apps_specialists = domain_policy.get("apps_specialists", [])
+
+                    if hib_noise_match:
+                        action_taken = "hib_noise_suppressed"
+                        assignee = "hib_noise"
+                        hold_recipients = []
+                        cc_manager = False
+                        cc_apps = False
+                        domain_bucket = "hib_noise"
+                    elif domain_bucket == "external_image_request":
+                        # Class 1: External image requests - round-robin to staff, NO CC
+                        assignee = get_next_staff()
+                        action_taken = "IMAGE_REQUEST_EXTERNAL"
+                        cc_manager = False
+                        cc_apps = False
+                        log(f"IMAGE_REQUEST_EXTERNAL domain={sender_domain} cc_manager=False cc_apps=False", "INFO")
+
+                    elif domain_bucket == "internal":
+                        # Internal domain: check if SAMI support staff
+                        if is_sami_support_staff(sender_email, domain_policy):
+                            # SAMI support staff - treat as COMPLETION
+                            is_completion = True
+                            action_taken = "COMPLETION"
+                            assignee = "completed"
+                            log(f"COMPLETION sender={sender_email} reason=SAMI_SUPPORT_STAFF", "INFO")
+                        else:
+                            # Non-SAMI internal sender - round-robin to staff
+                            assignee = get_next_staff()
+                            action_taken = "INTERNAL_QUERY"
+                            cc_manager = False
+                            cc_apps = False
+                            log(f"INTERNAL_QUERY domain={sender_domain}", "INFO")
+
+                    elif domain_bucket == "system_notification":
+                        # Class 3: System notifications - To apps, CC manager, no assignment
+                        action_taken = "SYSTEM_NOTIFICATION"
+                        assignee = "system_notification"
+                        cc_manager = True
+                        cc_apps = False
+                        # Apps specialists as To recipients
+                        for apps_email in policy_apps_specialists:
+                            hold_recipients.append(apps_email)
+                        # Manager will be added as CC via cc_manager flag
+                        log(f"SYSTEM_NOTIFICATION domain={sender_domain} to_apps={len(policy_apps_specialists)} cc_manager=True", "WARN")
+
+                    elif domain_bucket in ("unknown", "hold"):
+                        # Unknown domain: To manager, no CC
+                        action_taken = "UNKNOWN_DOMAIN"
+                        assignee = "hold"
+                        cc_manager = False
+                        cc_apps = False
+                        # Manager as To recipient
+                        if policy_manager:
+                            hold_recipients.append(policy_manager)
+                        log(f"UNKNOWN_DOMAIN domain={sender_domain} to_manager=True cc=False", "WARN")
+
+                    else:
+                        # Fallback for any other bucket
+                        assignee = get_next_staff()
+                        action_taken = "FALLBACK_ROUTING"
+                        log(f"FALLBACK_ROUTING domain_bucket={domain_bucket}", "WARN")
+
+                    # Handle SAMI completion early
+                    if is_completion:
+                        append_stats(subject, "completed", sender_email, "normal", domain_bucket, action_taken, policy_source)
+                        msg.UnRead = False
+                        msg.Move(processed)
+
+                        processed_ledger[message_key] = {
+                            "ts": datetime.now().isoformat(),
+                            "assigned_to": "completed",
+                            "risk": "normal",
+                            "completion_source": "sami_support_staff"
+                        }
+                        if identity.get("entry_id"):
+                            processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
+                        if identity.get("store_id"):
+                            processed_ledger[message_key]["store_id"] = identity.get("store_id")
+                        if identity.get("internet_message_id"):
+                            processed_ledger[message_key]["internet_message_id"] = identity.get("internet_message_id")
+                        if conversation_id:
+                            processed_ledger[message_key]["conversation_id"] = conversation_id
+                        if not save_processed_ledger(processed_ledger):
+                            log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
+                            log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
+                            return
+                        processed_count += 1
+                        continue
+
                     if not assignee:
                         log("No staff available for assignment!", "ERROR")
                         errors_count += 1
                         continue
-                    
+
                     if risk_level == "critical" and message_key in processed_ledger:
                         log("CRITICAL_ALREADY_PROCESSED", "WARN")
                         skipped_count += 1
@@ -1058,7 +1615,50 @@ def process_inbox():
 
                     # Forward email
                     fwd = msg.Forward()
-                    fwd.Recipients.Add(assignee)
+                    try:
+                        requester = sender_email.strip() if isinstance(sender_email, str) else ""
+                        if requester and "@" in requester:
+                            clean_subject = strip_bot_subject_tags(subject)
+                            mailto_subject = f"{COMPLETION_SUBJECT_KEYWORD} {clean_subject}".strip()
+                            mailto_link = build_completion_mailto(requester, SAMI_SHARED_INBOX, mailto_subject)
+                            if mailto_link:
+                                fwd.HTMLBody = prepend_completion_hotlink_html(fwd.HTMLBody or "", mailto_link)
+                    except Exception:
+                        log("COMPLETION_HOTLINK_FAIL", "WARN")
+
+                    # Add recipients based on routing decision
+                    if action_taken == "hib_noise_suppressed":
+                        if hib_cc_override:
+                            try:
+                                fwd.CC = hib_cc_override
+                            except Exception:
+                                log("HIB_NOISE_CC_SET_FAIL", "WARN")
+                    elif hold_recipients:
+                        # HOLD or SYSTEM_NOTIFICATION routing: add hold recipients
+                        for recipient in hold_recipients:
+                            fwd.Recipients.Add(recipient)
+                        log(f"HOLD_FORWARD count={len(hold_recipients)} action={action_taken}", "INFO")
+                    else:
+                        # Normal routing: add assignee
+                        fwd.Recipients.Add(assignee)
+
+                    # Add CC recipients based on policy flags
+                    if cc_manager and policy_manager:
+                        try:
+                            cc_recipient = fwd.Recipients.Add(policy_manager)
+                            cc_recipient.Type = 2  # CC
+                            log("CC_MANAGER_ADDED value=set", "INFO")
+                        except Exception as e:
+                            log(f"CC_MANAGER_ADD_FAIL {e}", "WARN")
+
+                    if cc_apps and policy_apps_specialists:
+                        for apps_email in policy_apps_specialists:
+                            try:
+                                cc_recipient = fwd.Recipients.Add(apps_email)
+                                cc_recipient.Type = 2  # CC
+                                log("CC_APPS_ADDED value=set", "INFO")
+                            except Exception as e:
+                                log(f"CC_APPS_ADD_FAIL {e}", "WARN")
                     if completion_cc_enabled:
                         try:
                             cc_recipient = fwd.Recipients.Add(effective_completion_cc)
@@ -1128,23 +1728,31 @@ def process_inbox():
                         # Add to watchdog review register
                         add_to_watchdog(msg_id, subject, assignee, sender_email, risk_reason)
                     else:
-                        fwd.Body = f"--- \U0001F3E5 AUTO-ASSIGNED TO {assignee} ---\n\n" + fwd.Body
+                        if action_taken not in ("hib_noise_suppressed", "UNKNOWN_DOMAIN"):
+                            fwd.Body = f"--- \U0001F3E5 AUTO-ASSIGNED TO {assignee} ---\n\n" + fwd.Body
+                        if action_taken == "UNKNOWN_DOMAIN":
+                            fwd.Body = (fwd.Body or "") + build_unknown_notice_block()
+                            log("UNKNOWN_NOTICE_BLOCK_ADDED action=UNKNOWN_DOMAIN", "INFO")
                     
                     fwd.SentOnBehalfOfName = CONFIG["mailbox"]
-                    fwd.Send()
+
+                    # SAFE_MODE enforcement
+                    is_safe, safe_reason = is_safe_mode()
+                    if is_safe:
+                        log(f"SAFE_MODE_SUPPRESS_SEND action={action_taken} bucket={domain_bucket} assignee={assignee} reason={safe_reason}", "WARN")
+                    else:
+                        fwd.Send()
+
                     if risk_level == "critical":
                         updated_ledger = mark_processed(message_key, "critical_forwarded", processed_ledger)
                         if updated_ledger is not None:
                             processed_ledger = updated_ledger
                     
-                    log(f"[{risk_level.upper()}] Assigned to {assignee}: {subject[:50]}...")
-                    
-                    # Tag and archive original
-                    risk_tag = f"[{risk_level.upper()}]" if risk_level != "normal" else ""
-                    msg.Subject = f"[Assigned: {assignee}] {risk_tag} {msg.Subject}"
-                    msg.Save()
-                    
-                    append_stats(msg.Subject, assignee, sender_email, risk_level)
+                    if action_taken != "hib_noise_suppressed":
+                        log(f"[{risk_level.upper()}] Assigned to {assignee}: {subject[:50]}...")
+
+                    # Archive original (no subject mutation per constraints)
+                    append_stats(subject, assignee, sender_email, risk_level, domain_bucket, action_taken, policy_source)
                     msg.UnRead = False
                     msg.Move(processed)
                     prev_reason = processed_ledger.get(message_key, {}).get("reason")
@@ -1153,6 +1761,8 @@ def process_inbox():
                         "assigned_to": assignee,
                         "risk": risk_level
                     }
+                    if action_taken == "hib_noise_suppressed":
+                        processed_ledger[message_key]["reason"] = "hib_noise_suppressed"
                     if identity.get("entry_id"):
                         processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
                     if identity.get("store_id"):
@@ -1171,7 +1781,7 @@ def process_inbox():
                     
                 except Exception as e:
                     log(f"Error processing email: {e}", "ERROR")
-                    append_stats(subject, "error", sender_email, "PROCESSING_ERROR")
+                    append_stats(subject, "error", sender_email, "PROCESSING_ERROR", domain_bucket if 'domain_bucket' in locals() else "", "PROCESSING_ERROR", policy_source if 'policy_source' in locals() else "")
                     errors_count += 1
                     poison_counts = load_poison_counts() or {}
                     poison_count = poison_counts.get(message_key, 0) + 1
@@ -1184,7 +1794,7 @@ def process_inbox():
                             try:
                                 msg.UnRead = False
                                 msg.Move(quarantine)
-                                append_stats(subject, "quarantined", sender_email, "QUARANTINED")
+                                append_stats(subject, "quarantined", sender_email, "QUARANTINED", domain_bucket if 'domain_bucket' in locals() else "", "QUARANTINED", policy_source if 'policy_source' in locals() else "")
                                 processed_count += 1
                                 continue
                             except Exception as qe:
@@ -1225,12 +1835,19 @@ if __name__ == "__main__":
     log(f"SLA Limit (review-only): {CONFIG['sla_minutes']} minutes")
     log(f"Staff loaded: {len(get_staff_list())} members")
     log("=" * 60)
+
+    # Log SAFE_MODE status
+    log_safe_mode_status()
+    log("=" * 60)
     
     # Initialize watchdog file if needed
     if not os.path.exists(FILES["watchdog"]):
         save_watchdog({})
         log("Initialized empty watchdog file")
-    
+
+    # Rotate daily_stats.csv to new schema if needed
+    maybe_rotate_daily_stats_to_new_schema()
+
     # Run immediately
     run_job()
     

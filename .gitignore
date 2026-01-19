@@ -6,18 +6,29 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
 
 # Ignore logs
 *.log
 dashboard.log
 bot.log
+logs/
 
 # Ignore PID files
 *.pid
+bot.lock
 
-# Ignore sensitive data (optional - keep CSV for demo)
-# daily_stats.csv
-# roster_state.json
+# Ignore sensitive/runtime state
+daily_stats*.csv
+processed_ledger.json
+roster_state.json
+urgent_watchdog.json
+settings_overrides.json
+
+# Ignore local-only exports/reports
+INBOX SCRAPE/
+archive/
+tools/data/
 
 # Ignore OS files
 .DS_Store
@@ -32,3 +43,9 @@ desktop.ini
 
 # Ignore embedded repo folder
 Transfer-Bot-3/
+
+# Ignore Outlook snapshot artifacts (dev-only)
+data/snapshots/
+data/snapshot_salt.txt
+*.snapshot.tmp
+*.csv.tmp

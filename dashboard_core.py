@@ -65,3 +65,14 @@ def compute_summary(stats_df, snapshot):
         summary["critical_count"] = len(stats_df[stats_df["Risk Level"] == "critical"])
         summary["urgent_count"] = len(stats_df[stats_df["Risk Level"] == "urgent"])
     return summary
+
+
+def compute_completions_today(stats_df, now_dt):
+    if stats_df is None or "Date" not in stats_df.columns or "Assigned To" not in stats_df.columns:
+        return 0
+    try:
+        today_str = now_dt.strftime("%Y-%m-%d")
+        df_today = stats_df[stats_df["Date"] == today_str]
+        return len(df_today[df_today["Assigned To"] == "completed"])
+    except Exception:
+        return 0

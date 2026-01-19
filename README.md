@@ -1,139 +1,60 @@
 # Transfer Operations Center
 
-An operational support tool that helps distribute emails from a shared Outlook mailbox fairly and consistently. It reduces manual workload, improves visibility, and supports accountability while operating locally on a workstation.
+Local-only mailbox routing for shared Outlook inboxes on Windows. The system monitors a shared inbox and forwards new emails to on-rotation staff, with a simple, deterministic distribution model and clear auditability.
 
-## What it does
+## What It Does
 
 - Monitors a shared Outlook inbox for new, unread emails
-- Automatically forwards each new email to an appropriate staff member
-- Distributes work evenly across the team using a simple rotation
-- Ensures every email is handled once, and only once
-- Keeps a permanent record of what happened to each email
+- Forwards each new email to an on-rotation staff member
+- Distributes work deterministically across the staff list
+- Keeps an audit trail of processed items
 - Preserves original messages in Outlook at all times
 
-## Why it helps
+## Forwarding Logic (High Level)
 
-- Reduces manual inbox triage
-- Prevents emails being missed or handled twice
-- Shares work fairly across available staff
-- Provides transparency and accountability
+- Only unread emails are candidates
+- Basic exclusion rules reduce re-routing of staff replies or loops
+- Deterministic round-robin across the on-rotation list
+- Optional CC visibility to a manager or group
+- Processed items are moved or labeled to avoid repeat handling
 
-## Visibility and oversight
+## Safety & Governance
 
-A local, read-only dashboard provides at-a-glance visibility into inbox handling.
+- Local-only operation; no external connectivity required
+- Does not delete emails
+- Append-only audit log for reviewability
+- Idempotent processing via a ledger to prevent duplicates
+- Corruption-safe state writes (atomic JSON)
 
-- See how many emails have been processed
-- View recent activity and assignment history
-- Confirm the system is running and healthy
-- Check which staff are currently configured
+## Dashboard
 
-## Staff management
+- Local Streamlit dashboard for operational visibility
+- Dashboard does not talk to Outlook directly
+- Dashboard writes only `settings_overrides.json`; the bot applies changes on the next tick
 
-The staff list is maintained in a simple text file.
+## Configuration Files (Canonical)
 
-- Add or remove staff without code changes
-- Updates are picked up automatically
-- The dashboard provides a quick way to locate and edit the list
+- `staff.txt`: on-rotation staff list (one address per line)
+- `roster_state.json`: current rotation state
+- `processed_ledger.json`: idempotency ledger of handled items
+- `daily_stats.csv`: append-only activity log
+- `settings_overrides.json`: optional runtime overrides applied by the bot
 
-## Safety principles
+## Operational Notes
 
-- Local-only operation
-- Outlook-only interaction
-- Non-destructive behavior
-- Fail-safe by default
+- Safe to stop/start; behavior is deterministic and audit-friendly
+- Staff can continue using Outlook manually at any time
+- Changes to `staff.txt` are picked up on the next processing tick
 
-## Documentation
+## Placeholder Examples
 
-- SYSTEM_ARCHITECTURE.md
-- SMART_FILTER_WORKFLOW.md
-- CHANGELOG.md
+- Shared inbox: `shared-mailbox@local`
+- Manager/group: `manager@local`
+- Staff: `staff1@local`, `staff2@local`
 
----
+## Local Tests
 
-# Governance & Safety Summary
+```bash
+python -m unittest -v
+```
 
-## Purpose
-
-The Transfer Operations Center is an operational support tool designed to assist with the fair and consistent distribution of emails from a shared Outlook mailbox.
-
-It is intended to reduce manual workload, improve visibility, and support accountability, while operating safely within standard desktop and information governance expectations.
-
-## Operational Boundaries
-
-The system is deliberately constrained to minimise risk.
-
-It:
-
-- Operates locally on a workstation
-- Interacts only with Outlook
-- Does not integrate with other systems
-- Does not require elevated permissions
-- Does not alter organisational infrastructure
-- **Performs only actions a user could do with a mouse and keyboard in Outlook and does not modify SA Health PCs**
-
-It functions as an assistant to normal inbox handling, not a replacement.
-
-## Data Handling & Privacy
-
-- All email content remains within Outlook
-- No data is transmitted externally
-- No cloud services or internet connections are required
-- No copies of email bodies are modified or rewritten
-- Audit records contain metadata only (e.g. timestamps, actions taken)
-
-If the system is stopped, all data remains accessible through Outlook as normal.
-
-## Safety & Failsafe Design
-
-The system is designed to fail safely.
-
-Key characteristics:
-
-- Non-destructive: emails are never deleted or permanently altered
-- Graceful failure: if an error occurs, processing stops; emails remain unread and available for manual handling
-- No background interference: the system does not run as a Windows service, does not hook system processes, and does not modify Outlook configuration
-- No automation lock-in: staff can continue working directly in Outlook at any time, regardless of system state
-
-## Change Control & Oversight
-
-- Staff assignment is managed through a simple, human-readable list
-- Changes are explicit and transparent
-- No automatic or hidden configuration changes occur
-- Activity is visible through a read-only dashboard
-
-This ensures changes are easy to understand, review, and reverse if needed.
-
-## Audit & Accountability
-
-- Every action taken by the system is logged locally
-- Logs are append-only and preserved over time
-- Each email can be traced from arrival to assignment
-- Records support operational review and internal assurance
-
-The system provides visibility without introducing complexity.
-
-## Policy Alignment (High-Level)
-
-The system aligns with common organisational IT and security principles:
-
-- Local processing only
-- Least-privilege operation
-- No external data movement
-- No system-level modification
-- Clear audit trail
-- Human override always available
-
-These constraints are intentional and foundational to the design.
-
-## Summary
-
-The Transfer Operations Center is a low-risk, transparent, and reversible operational tool.
-
-It improves inbox handling while:
-
-- Preserving existing workflows
-- Respecting system and data boundaries
-- Providing clear visibility and auditability
-- Remaining safe to stop, start, or remove
-
-At no point does it compromise system stability, data control, or staff autonomy.

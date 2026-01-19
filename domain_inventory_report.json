@@ -1,0 +1,1311 @@
+{
+  "sa.gov.au": {
+    "domain": "sa.gov.au",
+    "count": 20307,
+    "first_seen": "2015-11-14T13:00:04.055000+00:00",
+    "last_seen": "2026-01-16T12:57:09.093000+00:00",
+    "suggested_bucket": "internal"
+  },
+  "bensonradiology.com.au": {
+    "domain": "bensonradiology.com.au",
+    "count": 10285,
+    "first_seen": "2016-12-29T12:06:03.350000+00:00",
+    "last_seen": "2026-01-16T11:09:34.097000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "jonesradiology.com.au": {
+    "domain": "jonesradiology.com.au",
+    "count": 8672,
+    "first_seen": "2024-06-14T15:13:33.909000+00:00",
+    "last_seen": "2026-01-16T13:15:53.454000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "radiologysa.com.au": {
+    "domain": "radiologysa.com.au",
+    "count": 4157,
+    "first_seen": "2019-07-09T09:18:57.976000+00:00",
+    "last_seen": "2026-01-16T14:08:03.619000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "drjones.com.au": {
+    "domain": "drjones.com.au",
+    "count": 3782,
+    "first_seen": "2019-03-01T12:20:51.417000+00:00",
+    "last_seen": "2024-06-17T11:07:17.582000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "i-med.com.au": {
+    "domain": "i-med.com.au",
+    "count": 3511,
+    "first_seen": "2021-07-22T09:16:20.590000+00:00",
+    "last_seen": "2025-12-02T10:27:21.568000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "jonesradiology.atlassian.net": {
+    "domain": "jonesradiology.atlassian.net",
+    "count": 801,
+    "first_seen": "2025-11-25T10:31:00.860000+00:00",
+    "last_seen": "2026-01-16T10:54:12.060000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "health.telstra.com": {
+    "domain": "health.telstra.com",
+    "count": 609,
+    "first_seen": "2016-12-30T12:41:15.771000+00:00",
+    "last_seen": "2021-06-29T15:14:40.834000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "philips.com": {
+    "domain": "philips.com",
+    "count": 525,
+    "first_seen": "2019-08-26T14:34:15.609000+00:00",
+    "last_seen": "2025-06-02T11:45:19.012000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "nt.gov.au": {
+    "domain": "nt.gov.au",
+    "count": 430,
+    "first_seen": "2017-07-19T09:58:31.835000+00:00",
+    "last_seen": "2025-12-17T14:25:23.436000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "healthlink.net": {
+    "domain": "healthlink.net",
+    "count": 359,
+    "first_seen": "2016-06-22T15:31:18.971000+00:00",
+    "last_seen": "2025-11-26T14:29:26.767000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "zedtechnologies.com.au": {
+    "domain": "zedtechnologies.com.au",
+    "count": 323,
+    "first_seen": "2019-11-15T14:50:06.987000+00:00",
+    "last_seen": "2025-11-03T09:12:42.088000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "carestream.com": {
+    "domain": "carestream.com",
+    "count": 223,
+    "first_seen": "2015-12-24T14:50:54.837000+00:00",
+    "last_seen": "2020-03-25T09:13:03.754000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "petermac.org": {
+    "domain": "petermac.org",
+    "count": 99,
+    "first_seen": "2023-11-10T14:28:21.518000+00:00",
+    "last_seen": "2026-01-09T14:20:52.701000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "service-now.com": {
+    "domain": "service-now.com",
+    "count": 79,
+    "first_seen": "2023-04-24T15:56:29.172000+00:00",
+    "last_seen": "2025-12-29T10:54:01.717000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "materialise.com": {
+    "domain": "materialise.com",
+    "count": 70,
+    "first_seen": "2024-04-12T14:20:34.575000+00:00",
+    "last_seen": "2026-01-13T17:41:32.859000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "google.com": {
+    "domain": "google.com",
+    "count": 56,
+    "first_seen": "2024-10-10T15:06:55.464000+00:00",
+    "last_seen": "2025-12-10T04:33:11.909000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "health.qld.gov.au": {
+    "domain": "health.qld.gov.au",
+    "count": 52,
+    "first_seen": "2020-06-25T13:31:42.476000+00:00",
+    "last_seen": "2026-01-07T12:25:55.716000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "qscan.com.au": {
+    "domain": "qscan.com.au",
+    "count": 50,
+    "first_seen": "2021-09-28T09:20:00.555000+00:00",
+    "last_seen": "2025-10-08T11:39:39.581000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "medacta.com.au": {
+    "domain": "medacta.com.au",
+    "count": 48,
+    "first_seen": "2022-10-26T12:21:43.108000+00:00",
+    "last_seen": "2025-12-03T11:25:56.366000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "chib.had.sa.gov.au": {
+    "domain": "chib.had.sa.gov.au",
+    "count": 44,
+    "first_seen": "2025-03-31T11:26:06.529000+00:00",
+    "last_seen": "2026-01-15T14:35:14.705000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "imagingsol.com.au": {
+    "domain": "imagingsol.com.au",
+    "count": 39,
+    "first_seen": "2017-05-19T14:47:11.331000+00:00",
+    "last_seen": "2018-07-30T12:58:18.275000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "its.jnj.com": {
+    "domain": "its.jnj.com",
+    "count": 37,
+    "first_seen": "2022-08-08T21:47:28.050000+00:00",
+    "last_seen": "2025-09-18T10:38:08.174000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "everlightradiology.com": {
+    "domain": "everlightradiology.com",
+    "count": 36,
+    "first_seen": "2019-11-08T06:52:54.471000+00:00",
+    "last_seen": "2025-07-21T09:37:08.408000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "hibprod.mbcs.sag": {
+    "domain": "hibprod.mbcs.sag",
+    "count": 34,
+    "first_seen": "2018-04-24T16:05:16.596000+00:00",
+    "last_seen": "2020-07-03T09:30:31.220000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "aci.net.au": {
+    "domain": "aci.net.au",
+    "count": 31,
+    "first_seen": "2019-02-26T12:57:26.281000+00:00",
+    "last_seen": "2020-06-17T14:20:04.797000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "klsmartin.com": {
+    "domain": "klsmartin.com",
+    "count": 29,
+    "first_seen": "2023-04-04T16:07:14.489000+00:00",
+    "last_seen": "2025-11-28T16:16:57.163000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "stryker.com": {
+    "domain": "stryker.com",
+    "count": 25,
+    "first_seen": "2023-10-16T09:19:17.319000+00:00",
+    "last_seen": "2026-01-14T14:31:04.690000+00:00",
+    "suggested_bucket": "vendor_candidate"
+  },
+  "pab.healthcare": {
+    "domain": "pab.healthcare",
+    "count": 23,
+    "first_seen": "2017-04-12T22:38:34.265000+00:00",
+    "last_seen": "2024-12-29T08:12:25.608000+00:00",
+    "suggested_bucket": "other"
+  },
+  "austin.org.au": {
+    "domain": "austin.org.au",
+    "count": 22,
+    "first_seen": "2021-08-17T08:46:45.137000+00:00",
+    "last_seen": "2025-11-20T10:40:35.825000+00:00",
+    "suggested_bucket": "other"
+  },
+  "health.nsw.gov.au": {
+    "domain": "health.nsw.gov.au",
+    "count": 21,
+    "first_seen": "2020-10-12T15:33:38.219000+00:00",
+    "last_seen": "2026-01-14T10:27:37.127000+00:00",
+    "suggested_bucket": "other"
+  },
+  "insidestategovernment.com.au": {
+    "domain": "insidestategovernment.com.au",
+    "count": 21,
+    "first_seen": "2025-10-31T09:45:26.127000+00:00",
+    "last_seen": "2025-12-18T09:24:25.601000+00:00",
+    "suggested_bucket": "other"
+  },
+  "everlt.atlassian.net": {
+    "domain": "everlt.atlassian.net",
+    "count": 20,
+    "first_seen": "2019-11-11T09:08:03.214000+00:00",
+    "last_seen": "2023-11-13T12:34:01.354000+00:00",
+    "suggested_bucket": "other"
+  },
+  "medinexus.com.au": {
+    "domain": "medinexus.com.au",
+    "count": 19,
+    "first_seen": "2016-07-04T15:48:12.035000+00:00",
+    "last_seen": "2016-12-01T10:28:59.689000+00:00",
+    "suggested_bucket": "other"
+  },
+  "gmail.com": {
+    "domain": "gmail.com",
+    "count": 16,
+    "first_seen": "2018-01-17T12:41:03.583000+00:00",
+    "last_seen": "2025-08-21T12:27:26.109000+00:00",
+    "suggested_bucket": "other"
+  },
+  "psalerts.com.au": {
+    "domain": "psalerts.com.au",
+    "count": 16,
+    "first_seen": "2024-05-27T13:09:49.190000+00:00",
+    "last_seen": "2025-12-16T11:46:57.952000+00:00",
+    "suggested_bucket": "other"
+  },
+  "aurabox.app": {
+    "domain": "aurabox.app",
+    "count": 13,
+    "first_seen": "2024-09-16T10:26:33.542000+00:00",
+    "last_seen": "2024-10-09T07:24:10.335000+00:00",
+    "suggested_bucket": "other"
+  },
+  "alfred.org.au": {
+    "domain": "alfred.org.au",
+    "count": 12,
+    "first_seen": "2020-10-06T12:29:51.216000+00:00",
+    "last_seen": "2025-09-30T12:13:23.447000+00:00",
+    "suggested_bucket": "other"
+  },
+  "icare.nsw.gov.au": {
+    "domain": "icare.nsw.gov.au",
+    "count": 12,
+    "first_seen": "2022-08-10T08:49:34.248000+00:00",
+    "last_seen": "2025-11-13T16:12:40.803000+00:00",
+    "suggested_bucket": "other"
+  },
+  "spine.com.au": {
+    "domain": "spine.com.au",
+    "count": 11,
+    "first_seen": "2023-02-09T15:40:12.909000+00:00",
+    "last_seen": "2025-10-28T11:16:26.331000+00:00",
+    "suggested_bucket": "other"
+  },
+  "dxc.com": {
+    "domain": "dxc.com",
+    "count": 10,
+    "first_seen": "2018-05-04T09:31:09.107000+00:00",
+    "last_seen": "2025-05-05T09:04:35.566000+00:00",
+    "suggested_bucket": "other"
+  },
+  "genesiscare.com": {
+    "domain": "genesiscare.com",
+    "count": 10,
+    "first_seen": "2022-12-01T16:16:52.965000+00:00",
+    "last_seen": "2025-01-28T11:08:28.112000+00:00",
+    "suggested_bucket": "other"
+  },
+  "wlgore.com": {
+    "domain": "wlgore.com",
+    "count": 10,
+    "first_seen": "2025-04-14T13:46:49.040000+00:00",
+    "last_seen": "2026-01-13T12:07:50.846000+00:00",
+    "suggested_bucket": "other"
+  },
+  "zedtechnologies.com": {
+    "domain": "zedtechnologies.com",
+    "count": 10,
+    "first_seen": "2021-07-12T16:12:57.340000+00:00",
+    "last_seen": "2023-11-03T12:53:09.754000+00:00",
+    "suggested_bucket": "other"
+  },
+  "bridgeclinic.com.au": {
+    "domain": "bridgeclinic.com.au",
+    "count": 9,
+    "first_seen": "2019-01-30T11:37:51.603000+00:00",
+    "last_seen": "2021-08-09T16:47:28.129000+00:00",
+    "suggested_bucket": "other"
+  },
+  "health.wa.gov.au": {
+    "domain": "health.wa.gov.au",
+    "count": 9,
+    "first_seen": "2023-09-20T14:27:18.637000+00:00",
+    "last_seen": "2024-04-23T17:47:39.637000+00:00",
+    "suggested_bucket": "other"
+  },
+  "icon.team": {
+    "domain": "icon.team",
+    "count": 8,
+    "first_seen": "2022-07-28T10:10:32.895000+00:00",
+    "last_seen": "2025-01-03T10:03:54.755000+00:00",
+    "suggested_bucket": "other"
+  },
+  "volparahealth.com": {
+    "domain": "volparahealth.com",
+    "count": 8,
+    "first_seen": "2025-10-07T11:38:57.572000+00:00",
+    "last_seen": "2026-01-07T11:49:32.444000+00:00",
+    "suggested_bucket": "other"
+  },
+  "accounts.google.com": {
+    "domain": "accounts.google.com",
+    "count": 7,
+    "first_seen": "2024-10-17T11:15:41.166000+00:00",
+    "last_seen": "2025-02-21T13:24:10.809000+00:00",
+    "suggested_bucket": "other"
+  },
+  "barwonhealth.org.au": {
+    "domain": "barwonhealth.org.au",
+    "count": 7,
+    "first_seen": "2021-09-09T11:33:19.817000+00:00",
+    "last_seen": "2025-11-24T15:04:55.775000+00:00",
+    "suggested_bucket": "other"
+  },
+  "breastscreen.org.au": {
+    "domain": "breastscreen.org.au",
+    "count": 7,
+    "first_seen": "2024-03-28T15:12:53.625000+00:00",
+    "last_seen": "2025-12-03T15:20:02.317000+00:00",
+    "suggested_bucket": "other"
+  },
+  "internode.on.net": {
+    "domain": "internode.on.net",
+    "count": 7,
+    "first_seen": "2017-01-17T14:41:19.063000+00:00",
+    "last_seen": "2020-02-12T12:53:51.291000+00:00",
+    "suggested_bucket": "other"
+  },
+  "medical.canon": {
+    "domain": "medical.canon",
+    "count": 7,
+    "first_seen": "2018-06-29T20:45:24.506000+00:00",
+    "last_seen": "2023-01-24T11:06:59.340000+00:00",
+    "suggested_bucket": "other"
+  },
+  "flyingdoctor.net": {
+    "domain": "flyingdoctor.net",
+    "count": 6,
+    "first_seen": "2024-10-02T09:36:40.629000+00:00",
+    "last_seen": "2025-11-24T16:48:23.156000+00:00",
+    "suggested_bucket": "other"
+  },
+  "rch.org.au": {
+    "domain": "rch.org.au",
+    "count": 6,
+    "first_seen": "2021-12-27T19:55:05.573000+00:00",
+    "last_seen": "2025-10-30T11:11:36.255000+00:00",
+    "suggested_bucket": "other"
+  },
+  "bigpond.net.au": {
+    "domain": "bigpond.net.au",
+    "count": 5,
+    "first_seen": "2019-07-26T14:45:52.545000+00:00",
+    "last_seen": "2025-04-26T09:05:31.136000+00:00",
+    "suggested_bucket": "other"
+  },
+  "everlightradiology.com.au": {
+    "domain": "everlightradiology.com.au",
+    "count": 5,
+    "first_seen": "2016-10-31T10:01:29.353000+00:00",
+    "last_seen": "2017-12-31T09:30:32.063000+00:00",
+    "suggested_bucket": "other"
+  },
+  "gb.rtwsa.com": {
+    "domain": "gb.rtwsa.com",
+    "count": 5,
+    "first_seen": "2025-02-17T11:50:55.694000+00:00",
+    "last_seen": "2026-01-16T09:37:02.602000+00:00",
+    "suggested_bucket": "other"
+  },
+  "socru.org.au": {
+    "domain": "socru.org.au",
+    "count": 5,
+    "first_seen": "2025-06-02T15:09:59.472000+00:00",
+    "last_seen": "2025-12-03T08:17:40.474000+00:00",
+    "suggested_bucket": "other"
+  },
+  "vertexmedical.com.au": {
+    "domain": "vertexmedical.com.au",
+    "count": 5,
+    "first_seen": "2024-04-09T12:12:19.160000+00:00",
+    "last_seen": "2025-10-22T16:10:30.059000+00:00",
+    "suggested_bucket": "other"
+  },
+  "acha.org.au": {
+    "domain": "acha.org.au",
+    "count": 4,
+    "first_seen": "2017-04-28T10:44:12.547000+00:00",
+    "last_seen": "2020-02-04T14:55:03.406000+00:00",
+    "suggested_bucket": "other"
+  },
+  "barmeramedical.com.au": {
+    "domain": "barmeramedical.com.au",
+    "count": 4,
+    "first_seen": "2025-12-09T13:19:19.395000+00:00",
+    "last_seen": "2025-12-15T13:38:06.795000+00:00",
+    "suggested_bucket": "other"
+  },
+  "doctorwilson.com.au": {
+    "domain": "doctorwilson.com.au",
+    "count": 4,
+    "first_seen": "2023-10-17T12:35:03.200000+00:00",
+    "last_seen": "2025-12-24T12:57:45.869000+00:00",
+    "suggested_bucket": "other"
+  },
+  "mh.org.au": {
+    "domain": "mh.org.au",
+    "count": 4,
+    "first_seen": "2024-04-03T14:24:12.347000+00:00",
+    "last_seen": "2025-02-26T16:04:57.130000+00:00",
+    "suggested_bucket": "other"
+  },
+  "paulbannon.com.au": {
+    "domain": "paulbannon.com.au",
+    "count": 4,
+    "first_seen": "2025-05-19T10:04:28.327000+00:00",
+    "last_seen": "2025-05-28T08:12:46.926000+00:00",
+    "suggested_bucket": "other"
+  },
+  "renmarkmedical.com.au": {
+    "domain": "renmarkmedical.com.au",
+    "count": 4,
+    "first_seen": "2025-03-11T15:25:09.188000+00:00",
+    "last_seen": "2025-05-21T11:22:04.392000+00:00",
+    "suggested_bucket": "other"
+  },
+  "smartorthodontics.com.au": {
+    "domain": "smartorthodontics.com.au",
+    "count": 4,
+    "first_seen": "2024-04-03T10:09:32.662000+00:00",
+    "last_seen": "2025-01-09T13:33:05.495000+00:00",
+    "suggested_bucket": "other"
+  },
+  "woc.com.au": {
+    "domain": "woc.com.au",
+    "count": 4,
+    "first_seen": "2025-06-30T14:52:18.478000+00:00",
+    "last_seen": "2025-07-14T13:06:40.125000+00:00",
+    "suggested_bucket": "other"
+  },
+  "wpmed.com.au": {
+    "domain": "wpmed.com.au",
+    "count": 4,
+    "first_seen": "2021-02-26T15:23:42.120000+00:00",
+    "last_seen": "2026-01-08T09:49:25.938000+00:00",
+    "suggested_bucket": "other"
+  },
+  "yahoo.com": {
+    "domain": "yahoo.com",
+    "count": 4,
+    "first_seen": "2025-03-20T15:04:23.387000+00:00",
+    "last_seen": "2025-04-02T18:49:12.150000+00:00",
+    "suggested_bucket": "other"
+  },
+  "activeoa.com": {
+    "domain": "activeoa.com",
+    "count": 3,
+    "first_seen": "2025-11-28T11:02:16.034000+00:00",
+    "last_seen": "2026-01-15T15:46:49.529000+00:00",
+    "suggested_bucket": "other"
+  },
+  "adelaidedentist.com.au": {
+    "domain": "adelaidedentist.com.au",
+    "count": 3,
+    "first_seen": "2024-07-24T09:47:13.627000+00:00",
+    "last_seen": "2025-02-13T12:09:27.579000+00:00",
+    "suggested_bucket": "other"
+  },
+  "availer.com": {
+    "domain": "availer.com",
+    "count": 3,
+    "first_seen": "2024-10-22T20:36:11.076000+00:00",
+    "last_seen": "2024-10-24T16:07:50.133000+00:00",
+    "suggested_bucket": "other"
+  },
+  "courts.sa.gov.au": {
+    "domain": "courts.sa.gov.au",
+    "count": 3,
+    "first_seen": "2025-02-12T15:29:59.977000+00:00",
+    "last_seen": "2025-02-14T13:53:04.470000+00:00",
+    "suggested_bucket": "other"
+  },
+  "drfloreani.com.au": {
+    "domain": "drfloreani.com.au",
+    "count": 3,
+    "first_seen": "2025-04-01T12:58:14.945000+00:00",
+    "last_seen": "2025-06-03T11:43:27.570000+00:00",
+    "suggested_bucket": "other"
+  },
+  "e.healthlink.net": {
+    "domain": "e.healthlink.net",
+    "count": 3,
+    "first_seen": "2022-11-08T11:04:22.934000+00:00",
+    "last_seen": "2024-06-12T09:31:11.661000+00:00",
+    "suggested_bucket": "other"
+  },
+  "healthfirstgroup.com.au": {
+    "domain": "healthfirstgroup.com.au",
+    "count": 3,
+    "first_seen": "2025-01-24T12:47:39.616000+00:00",
+    "last_seen": "2025-01-24T14:04:03.171000+00:00",
+    "suggested_bucket": "other"
+  },
+  "ipn.com.au": {
+    "domain": "ipn.com.au",
+    "count": 3,
+    "first_seen": "2025-01-15T13:07:48.123000+00:00",
+    "last_seen": "2025-10-30T12:49:41.852000+00:00",
+    "suggested_bucket": "other"
+  },
+  "mail.rah.sa.gov.au": {
+    "domain": "mail.rah.sa.gov.au",
+    "count": 3,
+    "first_seen": "2017-05-29T17:07:04.358000+00:00",
+    "last_seen": "2017-08-16T10:43:52.833000+00:00",
+    "suggested_bucket": "other"
+  },
+  "medtronic.com": {
+    "domain": "medtronic.com",
+    "count": 3,
+    "first_seen": "2023-11-13T12:40:46.306000+00:00",
+    "last_seen": "2025-08-20T15:05:13.008000+00:00",
+    "suggested_bucket": "other"
+  },
+  "messaging.microsoft.com": {
+    "domain": "messaging.microsoft.com",
+    "count": 3,
+    "first_seen": "2024-06-11T14:06:06.761000+00:00",
+    "last_seen": "2025-07-30T13:05:11.987000+00:00",
+    "suggested_bucket": "other"
+  },
+  "michaeleaton.com.au": {
+    "domain": "michaeleaton.com.au",
+    "count": 3,
+    "first_seen": "2019-10-25T11:23:45.014000+00:00",
+    "last_seen": "2019-11-11T15:49:54.856000+00:00",
+    "suggested_bucket": "other"
+  },
+  "precisionradiology.com.au": {
+    "domain": "precisionradiology.com.au",
+    "count": 3,
+    "first_seen": "2024-10-16T09:14:27.582000+00:00",
+    "last_seen": "2024-11-15T13:46:34.637000+00:00",
+    "suggested_bucket": "other"
+  },
+  "precisionultrasound.com.au": {
+    "domain": "precisionultrasound.com.au",
+    "count": 3,
+    "first_seen": "2021-03-19T12:13:44.796000+00:00",
+    "last_seen": "2021-03-19T12:19:01.932000+00:00",
+    "suggested_bucket": "other"
+  },
+  "radiologytasmania.com.au": {
+    "domain": "radiologytasmania.com.au",
+    "count": 3,
+    "first_seen": "2025-02-24T09:27:15.585000+00:00",
+    "last_seen": "2025-03-04T15:52:53.357000+00:00",
+    "suggested_bucket": "other"
+  },
+  "rchsd.org": {
+    "domain": "rchsd.org",
+    "count": 3,
+    "first_seen": "2024-10-24T15:35:52.581000+00:00",
+    "last_seen": "2024-10-24T16:01:09.279000+00:00",
+    "suggested_bucket": "other"
+  },
+  "samchenperiodontist.com.au": {
+    "domain": "samchenperiodontist.com.au",
+    "count": 3,
+    "first_seen": "2024-10-31T09:09:26.991000+00:00",
+    "last_seen": "2025-03-26T08:33:20.557000+00:00",
+    "suggested_bucket": "other"
+  },
+  "siemens-healthineers.com": {
+    "domain": "siemens-healthineers.com",
+    "count": 3,
+    "first_seen": "2020-01-17T08:17:41.049000+00:00",
+    "last_seen": "2022-01-21T10:57:06.345000+00:00",
+    "suggested_bucket": "other"
+  },
+  "5dclinics.com.au": {
+    "domain": "5dclinics.com.au",
+    "count": 2,
+    "first_seen": "2022-05-06T13:58:16.906000+00:00",
+    "last_seen": "2024-05-20T15:57:37.155000+00:00",
+    "suggested_bucket": "other"
+  },
+  "ahkc.com.au": {
+    "domain": "ahkc.com.au",
+    "count": 2,
+    "first_seen": "2025-01-03T10:55:26.726000+00:00",
+    "last_seen": "2025-01-16T10:36:02.676000+00:00",
+    "suggested_bucket": "other"
+  },
+  "burnsidedental.com.au": {
+    "domain": "burnsidedental.com.au",
+    "count": 2,
+    "first_seen": "2024-11-01T17:10:49.826000+00:00",
+    "last_seen": "2024-11-04T10:13:42.245000+00:00",
+    "suggested_bucket": "other"
+  },
+  "crsa.au": {
+    "domain": "crsa.au",
+    "count": 2,
+    "first_seen": "2025-03-07T10:04:48.920000+00:00",
+    "last_seen": "2025-03-07T11:05:21.686000+00:00",
+    "suggested_bucket": "other"
+  },
+  "dental-excellence.com.au": {
+    "domain": "dental-excellence.com.au",
+    "count": 2,
+    "first_seen": "2024-11-01T16:03:33.988000+00:00",
+    "last_seen": "2024-11-04T08:30:48.225000+00:00",
+    "suggested_bucket": "other"
+  },
+  "drbernardcarney.com.au": {
+    "domain": "drbernardcarney.com.au",
+    "count": 2,
+    "first_seen": "2025-01-28T13:13:15.361000+00:00",
+    "last_seen": "2025-01-29T16:28:35.965000+00:00",
+    "suggested_bucket": "other"
+  },
+  "email.apple.com": {
+    "domain": "email.apple.com",
+    "count": 2,
+    "first_seen": "2025-02-21T14:38:15.082000+00:00",
+    "last_seen": "2025-03-13T14:07:18.541000+00:00",
+    "suggested_bucket": "other"
+  },
+  "emerginghealthcare.com.au": {
+    "domain": "emerginghealthcare.com.au",
+    "count": 2,
+    "first_seen": "2025-02-19T10:53:02.415000+00:00",
+    "last_seen": "2025-02-19T10:59:23.338000+00:00",
+    "suggested_bucket": "other"
+  },
+  "floridaproton.org": {
+    "domain": "floridaproton.org",
+    "count": 2,
+    "first_seen": "2024-10-19T04:05:39.922000+00:00",
+    "last_seen": "2024-10-19T10:10:21.804000+00:00",
+    "suggested_bucket": "other"
+  },
+  "hainesortho.com.au": {
+    "domain": "hainesortho.com.au",
+    "count": 2,
+    "first_seen": "2023-03-10T14:24:35.772000+00:00",
+    "last_seen": "2023-03-10T16:01:31.647000+00:00",
+    "suggested_bucket": "other"
+  },
+  "healthscope.com.au": {
+    "domain": "healthscope.com.au",
+    "count": 2,
+    "first_seen": "2024-07-04T11:40:51.287000+00:00",
+    "last_seen": "2024-07-04T15:39:13.945000+00:00",
+    "suggested_bucket": "other"
+  },
+  "hyland.com": {
+    "domain": "hyland.com",
+    "count": 2,
+    "first_seen": "2020-06-25T16:18:45.169000+00:00",
+    "last_seen": "2021-01-30T02:40:53.844000+00:00",
+    "suggested_bucket": "other"
+  },
+  "icloud.com": {
+    "domain": "icloud.com",
+    "count": 2,
+    "first_seen": "2022-08-02T10:21:14.263000+00:00",
+    "last_seen": "2023-11-24T08:54:29.352000+00:00",
+    "suggested_bucket": "other"
+  },
+  "kofax.com": {
+    "domain": "kofax.com",
+    "count": 2,
+    "first_seen": "2017-09-16T01:18:20.447000+00:00",
+    "last_seen": "2017-09-19T02:03:38.006000+00:00",
+    "suggested_bucket": "other"
+  },
+  "moanamedicalcentre.com.au": {
+    "domain": "moanamedicalcentre.com.au",
+    "count": 2,
+    "first_seen": "2018-08-07T11:57:30.424000+00:00",
+    "last_seen": "2018-08-07T18:15:50.139000+00:00",
+    "suggested_bucket": "other"
+  },
+  "mumsandbabies.com.au": {
+    "domain": "mumsandbabies.com.au",
+    "count": 2,
+    "first_seen": "2024-11-20T12:21:23.032000+00:00",
+    "last_seen": "2024-11-20T17:40:39.358000+00:00",
+    "suggested_bucket": "other"
+  },
+  "nh.org.au": {
+    "domain": "nh.org.au",
+    "count": 2,
+    "first_seen": "2025-06-04T20:09:14.413000+00:00",
+    "last_seen": "2025-06-13T10:34:45.761000+00:00",
+    "suggested_bucket": "other"
+  },
+  "physio439.com.au": {
+    "domain": "physio439.com.au",
+    "count": 2,
+    "first_seen": "2024-10-25T12:59:50.682000+00:00",
+    "last_seen": "2024-10-28T13:21:26.331000+00:00",
+    "suggested_bucket": "other"
+  },
+  "portpiriedental.com.au": {
+    "domain": "portpiriedental.com.au",
+    "count": 2,
+    "first_seen": "2025-08-07T16:08:20.009000+00:00",
+    "last_seen": "2025-08-11T12:36:08.294000+00:00",
+    "suggested_bucket": "other"
+  },
+  "radinetpro.com": {
+    "domain": "radinetpro.com",
+    "count": 2,
+    "first_seen": "2024-04-18T09:12:35.654000+00:00",
+    "last_seen": "2024-04-19T14:42:24.389000+00:00",
+    "suggested_bucket": "other"
+  },
+  "scr.com.au": {
+    "domain": "scr.com.au",
+    "count": 2,
+    "first_seen": "2022-12-20T09:54:17.145000+00:00",
+    "last_seen": "2023-12-21T15:47:55.679000+00:00",
+    "suggested_bucket": "other"
+  },
+  "smartdermatology.com.au": {
+    "domain": "smartdermatology.com.au",
+    "count": 2,
+    "first_seen": "2022-07-05T09:32:57.095000+00:00",
+    "last_seen": "2022-07-05T09:46:41.111000+00:00",
+    "suggested_bucket": "other"
+  },
+  "strathphysio.com.au": {
+    "domain": "strathphysio.com.au",
+    "count": 2,
+    "first_seen": "2025-07-17T08:46:42.643000+00:00",
+    "last_seen": "2025-07-18T12:19:39.985000+00:00",
+    "suggested_bucket": "other"
+  },
+  "ths.tas.gov.au": {
+    "domain": "ths.tas.gov.au",
+    "count": 2,
+    "first_seen": "2025-11-13T12:18:35.476000+00:00",
+    "last_seen": "2025-11-14T06:34:45.382000+00:00",
+    "suggested_bucket": "other"
+  },
+  "victorchang.edu.au": {
+    "domain": "victorchang.edu.au",
+    "count": 2,
+    "first_seen": "2024-09-13T10:20:40.401000+00:00",
+    "last_seen": "2024-09-18T14:05:23.978000+00:00",
+    "suggested_bucket": "other"
+  },
+  "westerneyecare.com.au": {
+    "domain": "westerneyecare.com.au",
+    "count": 2,
+    "first_seen": "2025-05-22T10:13:16.443000+00:00",
+    "last_seen": "2025-05-22T15:48:46.701000+00:00",
+    "suggested_bucket": "other"
+  },
+  "adam.com.au": {
+    "domain": "adam.com.au",
+    "count": 1,
+    "first_seen": "2018-08-14T10:16:39.840000+00:00",
+    "last_seen": "2018-08-14T10:16:39.840000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "adelaidearthroplasty.com.au": {
+    "domain": "adelaidearthroplasty.com.au",
+    "count": 1,
+    "first_seen": "2023-11-20T12:57:52.849000+00:00",
+    "last_seen": "2023-11-20T12:57:52.849000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "adelaidemaxfax.com.au": {
+    "domain": "adelaidemaxfax.com.au",
+    "count": 1,
+    "first_seen": "2025-03-06T15:50:14.429000+00:00",
+    "last_seen": "2025-03-06T15:50:14.429000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "adelaideneurodiagnostics.com.au": {
+    "domain": "adelaideneurodiagnostics.com.au",
+    "count": 1,
+    "first_seen": "2022-09-29T14:28:18.470000+00:00",
+    "last_seen": "2022-09-29T14:28:18.470000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "adelaiderespiratory.com.au": {
+    "domain": "adelaiderespiratory.com.au",
+    "count": 1,
+    "first_seen": "2021-02-17T15:42:24.148000+00:00",
+    "last_seen": "2021-02-17T15:42:24.148000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "adelaidevascular.com": {
+    "domain": "adelaidevascular.com",
+    "count": 1,
+    "first_seen": "2025-07-09T08:40:32.541000+00:00",
+    "last_seen": "2025-07-09T08:40:32.541000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "adobe.com": {
+    "domain": "adobe.com",
+    "count": 1,
+    "first_seen": "2024-10-10T15:29:05.324000+00:00",
+    "last_seen": "2024-10-10T15:29:05.324000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "advancedoms.com.au": {
+    "domain": "advancedoms.com.au",
+    "count": 1,
+    "first_seen": "2023-08-14T10:22:40.882000+00:00",
+    "last_seen": "2023-08-14T10:22:40.882000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "apollomit.com": {
+    "domain": "apollomit.com",
+    "count": 1,
+    "first_seen": "2024-12-19T11:48:33.479000+00:00",
+    "last_seen": "2024-12-19T11:48:33.479000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "arkabamedical.com.au": {
+    "domain": "arkabamedical.com.au",
+    "count": 1,
+    "first_seen": "2025-05-15T08:29:01.132000+00:00",
+    "last_seen": "2025-05-15T08:29:01.132000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "aurabox.cloud": {
+    "domain": "aurabox.cloud",
+    "count": 1,
+    "first_seen": "2024-09-16T10:57:31.919000+00:00",
+    "last_seen": "2024-09-16T10:57:31.919000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "berrimedical.com.au": {
+    "domain": "berrimedical.com.au",
+    "count": 1,
+    "first_seen": "2025-03-26T13:41:32.416000+00:00",
+    "last_seen": "2025-03-26T13:41:32.416000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "bigpond.com": {
+    "domain": "bigpond.com",
+    "count": 1,
+    "first_seen": "2020-09-18T17:01:23.473000+00:00",
+    "last_seen": "2020-09-18T17:01:23.473000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "bmcdoctors.com.au": {
+    "domain": "bmcdoctors.com.au",
+    "count": 1,
+    "first_seen": "2023-08-02T15:20:43.709000+00:00",
+    "last_seen": "2023-08-02T15:20:43.709000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "cabrini.com.au": {
+    "domain": "cabrini.com.au",
+    "count": 1,
+    "first_seen": "2025-05-19T11:19:02.409000+00:00",
+    "last_seen": "2025-05-19T11:19:02.409000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "centralneurosurgery.com.au": {
+    "domain": "centralneurosurgery.com.au",
+    "count": 1,
+    "first_seen": "2025-05-15T12:00:44.263000+00:00",
+    "last_seen": "2025-05-15T12:00:44.263000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "completechirosa.com.au": {
+    "domain": "completechirosa.com.au",
+    "count": 1,
+    "first_seen": "2025-01-07T11:48:16.831000+00:00",
+    "last_seen": "2025-01-07T11:48:16.831000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "drbec.com.au": {
+    "domain": "drbec.com.au",
+    "count": 1,
+    "first_seen": "2020-05-06T09:19:28.475000+00:00",
+    "last_seen": "2020-05-06T09:19:28.475000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "drrichardharries.com.au": {
+    "domain": "drrichardharries.com.au",
+    "count": 1,
+    "first_seen": "2022-08-03T09:47:21.980000+00:00",
+    "last_seen": "2022-08-03T09:47:21.980000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "dwft.au": {
+    "domain": "dwft.au",
+    "count": 1,
+    "first_seen": "2024-05-08T16:41:25.264000+00:00",
+    "last_seen": "2024-05-08T16:41:25.264000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "eastadelaideoandg.com.au": {
+    "domain": "eastadelaideoandg.com.au",
+    "count": 1,
+    "first_seen": "2022-02-28T10:43:23.148000+00:00",
+    "last_seen": "2022-02-28T10:43:23.148000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "email.teams.microsoft.com": {
+    "domain": "email.teams.microsoft.com",
+    "count": 1,
+    "first_seen": "2025-01-16T14:30:55.844000+00:00",
+    "last_seen": "2025-01-16T14:30:55.844000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "embracemidwifery.net": {
+    "domain": "embracemidwifery.net",
+    "count": 1,
+    "first_seen": "2020-10-19T10:29:15.121000+00:00",
+    "last_seen": "2020-10-19T10:29:15.121000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "eml.rtwsa.com": {
+    "domain": "eml.rtwsa.com",
+    "count": 1,
+    "first_seen": "2020-06-18T15:44:41.867000+00:00",
+    "last_seen": "2020-06-18T15:44:41.867000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "epworth.org.au": {
+    "domain": "epworth.org.au",
+    "count": 1,
+    "first_seen": "2024-01-19T13:05:51.164000+00:00",
+    "last_seen": "2024-01-19T13:05:51.164000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "fbwgynplus.com": {
+    "domain": "fbwgynplus.com",
+    "count": 1,
+    "first_seen": "2020-11-21T12:30:33.843000+00:00",
+    "last_seen": "2020-11-21T12:30:33.843000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "fujifilm.com": {
+    "domain": "fujifilm.com",
+    "count": 1,
+    "first_seen": "2023-04-24T10:52:41.257000+00:00",
+    "last_seen": "2023-04-24T10:52:41.257000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "fujifilm.com.au": {
+    "domain": "fujifilm.com.au",
+    "count": 1,
+    "first_seen": "2017-07-19T10:42:24.077000+00:00",
+    "last_seen": "2017-07-19T10:42:24.077000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "gentledentistry.com.au": {
+    "domain": "gentledentistry.com.au",
+    "count": 1,
+    "first_seen": "2025-02-04T13:09:53.371000+00:00",
+    "last_seen": "2025-02-04T13:09:53.371000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "gentledentistryadelaide.com.au": {
+    "domain": "gentledentistryadelaide.com.au",
+    "count": 1,
+    "first_seen": "2025-07-24T09:17:08.643000+00:00",
+    "last_seen": "2025-07-24T09:17:08.643000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "goodsmiles.com.au": {
+    "domain": "goodsmiles.com.au",
+    "count": 1,
+    "first_seen": "2024-08-08T15:44:59.243000+00:00",
+    "last_seen": "2024-08-08T15:44:59.243000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "hampsteaddentalpractice.com.au": {
+    "domain": "hampsteaddentalpractice.com.au",
+    "count": 1,
+    "first_seen": "2025-03-04T09:51:59.155000+00:00",
+    "last_seen": "2025-03-04T09:51:59.155000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "happyvalleydentalsurgery.com.au": {
+    "domain": "happyvalleydentalsurgery.com.au",
+    "count": 1,
+    "first_seen": "2024-03-28T12:48:21.785000+00:00",
+    "last_seen": "2024-03-28T12:48:21.785000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "healthonkensington.com.au": {
+    "domain": "healthonkensington.com.au",
+    "count": 1,
+    "first_seen": "2026-01-15T11:56:49.776000+00:00",
+    "last_seen": "2026-01-15T11:56:49.776000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "hotmail.com": {
+    "domain": "hotmail.com",
+    "count": 1,
+    "first_seen": "2023-10-03T13:57:18.764000+00:00",
+    "last_seen": "2023-10-03T13:57:18.764000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "humankindstudios.com.au": {
+    "domain": "humankindstudios.com.au",
+    "count": 1,
+    "first_seen": "2024-07-26T13:55:33.811000+00:00",
+    "last_seen": "2024-07-26T13:55:33.811000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "imagingassociates.net.au": {
+    "domain": "imagingassociates.net.au",
+    "count": 1,
+    "first_seen": "2024-09-24T11:00:19.952000+00:00",
+    "last_seen": "2024-09-24T11:00:19.952000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "info.messagemedia.com": {
+    "domain": "info.messagemedia.com",
+    "count": 1,
+    "first_seen": "2025-09-05T14:26:27.686000+00:00",
+    "last_seen": "2025-09-05T14:26:27.686000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "insideapple.apple.com": {
+    "domain": "insideapple.apple.com",
+    "count": 1,
+    "first_seen": "2025-03-14T02:15:43.129000+00:00",
+    "last_seen": "2025-03-14T02:15:43.129000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "investigatorclinic.com.au": {
+    "domain": "investigatorclinic.com.au",
+    "count": 1,
+    "first_seen": "2023-06-16T14:21:32.397000+00:00",
+    "last_seen": "2023-06-16T14:21:32.397000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "klemzigvillagemedical.com.au": {
+    "domain": "klemzigvillagemedical.com.au",
+    "count": 1,
+    "first_seen": "2020-11-19T15:57:19.913000+00:00",
+    "last_seen": "2020-11-19T15:57:19.913000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "lightradiology.com.au": {
+    "domain": "lightradiology.com.au",
+    "count": 1,
+    "first_seen": "2023-09-06T10:06:48.537000+00:00",
+    "last_seen": "2023-09-06T10:06:48.537000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "loxtondoctors.com.au": {
+    "domain": "loxtondoctors.com.au",
+    "count": 1,
+    "first_seen": "2024-12-17T13:14:09.385000+00:00",
+    "last_seen": "2024-12-17T13:14:09.385000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "lumusimaging.com.au": {
+    "domain": "lumusimaging.com.au",
+    "count": 1,
+    "first_seen": "2024-10-24T15:20:51.319000+00:00",
+    "last_seen": "2024-10-24T15:20:51.319000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "mail.medidata.com": {
+    "domain": "mail.medidata.com",
+    "count": 1,
+    "first_seen": "2024-06-18T12:33:02.444000+00:00",
+    "last_seen": "2024-06-18T12:33:02.444000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "malleeborderhealth.com.au": {
+    "domain": "malleeborderhealth.com.au",
+    "count": 1,
+    "first_seen": "2021-05-10T14:11:11.758000+00:00",
+    "last_seen": "2021-05-10T14:11:11.758000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "mbph.org.au": {
+    "domain": "mbph.org.au",
+    "count": 1,
+    "first_seen": "2023-10-18T14:10:27.307000+00:00",
+    "last_seen": "2023-10-18T14:10:27.307000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "melbournekneeortho.com.au": {
+    "domain": "melbournekneeortho.com.au",
+    "count": 1,
+    "first_seen": "2024-04-09T12:11:15.728000+00:00",
+    "last_seen": "2024-04-09T12:11:15.728000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "microsoft.com": {
+    "domain": "microsoft.com",
+    "count": 1,
+    "first_seen": "2025-10-08T12:32:29.730000+00:00",
+    "last_seen": "2025-10-08T12:32:29.730000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "movewellpodiatry.com.au": {
+    "domain": "movewellpodiatry.com.au",
+    "count": 1,
+    "first_seen": "2024-02-06T09:58:10.570000+00:00",
+    "last_seen": "2024-02-06T09:58:10.570000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "nadc.email": {
+    "domain": "nadc.email",
+    "count": 1,
+    "first_seen": "2023-06-29T12:08:30.680000+00:00",
+    "last_seen": "2023-06-29T12:08:30.680000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "nec.com.au": {
+    "domain": "nec.com.au",
+    "count": 1,
+    "first_seen": "2017-02-17T15:27:26.414000+00:00",
+    "last_seen": "2017-02-17T15:27:26.414000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "ntcardiac.com": {
+    "domain": "ntcardiac.com",
+    "count": 1,
+    "first_seen": "2024-12-30T15:09:56.877000+00:00",
+    "last_seen": "2024-12-30T15:09:56.877000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "pdcare.com.au": {
+    "domain": "pdcare.com.au",
+    "count": 1,
+    "first_seen": "2024-05-21T15:28:11.049000+00:00",
+    "last_seen": "2024-05-21T15:28:11.049000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "physioactivesa.com.au": {
+    "domain": "physioactivesa.com.au",
+    "count": 1,
+    "first_seen": "2023-10-17T14:19:19.010000+00:00",
+    "last_seen": "2023-10-17T14:19:19.010000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "physioretreat.com.au": {
+    "domain": "physioretreat.com.au",
+    "count": 1,
+    "first_seen": "2024-12-27T14:03:06.008000+00:00",
+    "last_seen": "2024-12-27T14:03:06.008000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "physioxtra.com": {
+    "domain": "physioxtra.com",
+    "count": 1,
+    "first_seen": "2021-05-10T16:21:04.268000+00:00",
+    "last_seen": "2021-05-10T16:21:04.268000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "richardcrowley.com.au": {
+    "domain": "richardcrowley.com.au",
+    "count": 1,
+    "first_seen": "2025-02-03T17:28:31.310000+00:00",
+    "last_seen": "2025-02-03T17:28:31.310000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "shimadzu.com.au": {
+    "domain": "shimadzu.com.au",
+    "count": 1,
+    "first_seen": "2021-09-06T09:57:50.435000+00:00",
+    "last_seen": "2021-09-06T09:57:50.435000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "signatureorthodontics.com.au": {
+    "domain": "signatureorthodontics.com.au",
+    "count": 1,
+    "first_seen": "2025-03-20T11:45:45.828000+00:00",
+    "last_seen": "2025-03-20T11:45:45.828000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "skg.com.au": {
+    "domain": "skg.com.au",
+    "count": 1,
+    "first_seen": "2025-08-26T15:33:51.447000+00:00",
+    "last_seen": "2025-08-26T15:33:51.447000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "sms.sa.gov.au": {
+    "domain": "sms.sa.gov.au",
+    "count": 1,
+    "first_seen": "2026-01-15T12:30:28.963000+00:00",
+    "last_seen": "2026-01-15T12:30:28.963000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "specialistimaging.com.au": {
+    "domain": "specialistimaging.com.au",
+    "count": 1,
+    "first_seen": "2017-04-13T10:59:48.356000+00:00",
+    "last_seen": "2017-04-13T10:59:48.356000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "sportsmed.com.au": {
+    "domain": "sportsmed.com.au",
+    "count": 1,
+    "first_seen": "2025-08-13T10:20:23.217000+00:00",
+    "last_seen": "2025-08-13T10:20:23.217000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "tankardriverland.com.au": {
+    "domain": "tankardriverland.com.au",
+    "count": 1,
+    "first_seen": "2025-07-28T16:17:41.140000+00:00",
+    "last_seen": "2025-07-28T16:17:41.140000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "teachershealth.com.au": {
+    "domain": "teachershealth.com.au",
+    "count": 1,
+    "first_seen": "2023-06-26T14:21:54.557000+00:00",
+    "last_seen": "2023-06-26T14:21:54.557000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "thedentistportpirie.com.au": {
+    "domain": "thedentistportpirie.com.au",
+    "count": 1,
+    "first_seen": "2025-01-07T13:41:49.732000+00:00",
+    "last_seen": "2025-01-07T13:41:49.732000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "totalhealthchiropractic.com.au": {
+    "domain": "totalhealthchiropractic.com.au",
+    "count": 1,
+    "first_seen": "2025-12-05T10:00:24.760000+00:00",
+    "last_seen": "2025-12-05T10:00:24.760000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "vancoortho.com.au": {
+    "domain": "vancoortho.com.au",
+    "count": 1,
+    "first_seen": "2024-05-10T16:06:00.484000+00:00",
+    "last_seen": "2024-05-10T16:06:00.484000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "vbjs.com.au": {
+    "domain": "vbjs.com.au",
+    "count": 1,
+    "first_seen": "2023-11-22T13:32:58.138000+00:00",
+    "last_seen": "2023-11-22T13:32:58.138000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "waikeriemedical.com.au": {
+    "domain": "waikeriemedical.com.au",
+    "count": 1,
+    "first_seen": "2025-10-22T16:56:53.349000+00:00",
+    "last_seen": "2025-10-22T16:56:53.349000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "westnet.com.au": {
+    "domain": "westnet.com.au",
+    "count": 1,
+    "first_seen": "2018-02-15T10:49:56.919000+00:00",
+    "last_seen": "2018-02-15T10:49:56.919000+00:00",
+    "suggested_bucket": "one_off"
+  },
+  "zimmerbiomet.com": {
+    "domain": "zimmerbiomet.com",
+    "count": 1,
+    "first_seen": "2024-11-19T13:48:08.332000+00:00",
+    "last_seen": "2024-11-19T13:48:08.332000+00:00",
+    "suggested_bucket": "one_off"
+  }
+}
