@@ -61,6 +61,7 @@ COMPLETION_CC_ADDR = "completion.placeholder@example.invalid"
 SAMI_SHARED_INBOX = "health.samisupportteam@sa.gov.au"
 COMPLETION_SUBJECT_KEYWORD = "[COMPLETED]"
 HEARTBEAT_INTERVAL_SECONDS = 300
+_staff_list_cache = None
 
 def is_valid_completion_cc(value):
     if not isinstance(value, str):
@@ -218,7 +219,7 @@ def build_completion_mailto(to_addr, cc_addr, subject):
     subject_value = "" if subject is None else str(subject)
     params = []
     if cc_value:
-        params.append(f"cc={cc_value}")
+        params.append(f"cc={quote(cc_value)}")
     params.append(f"subject={quote(subject_value)}")
     return f"mailto:{to_value}?{'&'.join(params)}"
 
@@ -786,7 +787,7 @@ def save_poison_counts(counts):
 
 def get_next_staff():
     """Get next staff member in rotation"""
-    staff = get_staff_list()
+    staff = _staff_list_cache if _staff_list_cache is not None else get_staff_list()
     if not staff:
         return None
     
@@ -1314,7 +1315,9 @@ def process_inbox():
             if not msgs:
                 return  # No new messages
             
+            global _staff_list_cache
             staff_list = get_staff_list()
+            _staff_list_cache = staff_list
             if not ensure_processed_ledger_exists(PROCESSED_LEDGER_PATH):
                 log("STATE_REQUIRED_SKIP state=processed_ledger", "ERROR")
                 log(f"TICK_SKIP tick_id={tick_id} reason=STATE_REQUIRED_MISSING", "ERROR")
@@ -1618,11 +1621,31 @@ def process_inbox():
                     try:
                         requester = sender_email.strip() if isinstance(sender_email, str) else ""
                         if requester and "@" in requester:
+                            assignee_email = assignee if isinstance(assignee, str) else ""
+                            staff_set = {s.lower() for s in staff_list}
+                            if assignee_email.lower() == "hold":
+                                skip_reason = "hold_route"
+                            elif action_taken == "UNKNOWN_DOMAIN":
+                                skip_reason = "unknown_domain"
+                            elif action_taken == "IMAGE_REQUEST_EXTERNAL":
+                                skip_reason = "external_image_request"
+                            elif assignee_email.lower() not in staff_set:
+                                skip_reason = "assignee_not_staff"
+                            else:
+                                skip_reason = ""
                             clean_subject = strip_bot_subject_tags(subject)
                             mailto_subject = f"{COMPLETION_SUBJECT_KEYWORD} {clean_subject}".strip()
                             mailto_link = build_completion_mailto(requester, SAMI_SHARED_INBOX, mailto_subject)
-                            if mailto_link:
+                            msg_id = getattr(msg, "EntryID", "") or getattr(msg, "ConversationID", "") or ""
+                            safe_mode = is_safe_mode()[0]
+                            if mailto_link and not skip_reason:
                                 fwd.HTMLBody = prepend_completion_hotlink_html(fwd.HTMLBody or "", mailto_link)
+                                log(f"HOTLINK_INJECTED safe_mode={safe_mode} msg_id={msg_id}", "INFO")
+                            elif skip_reason:
+                                log(
+                                    f"HOTLINK_SKIPPED safe_mode={safe_mode} msg_id={msg_id} reason={skip_reason}",
+                                    "INFO"
+                                )
                     except Exception:
                         log("COMPLETION_HOTLINK_FAIL", "WARN")
 
@@ -1808,6 +1831,7 @@ def process_inbox():
             errors_count += 1
             # Don't crash - will retry next cycle
     finally:
+        _staff_list_cache = None
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         log(
             f"TICK_END tick_id={tick_id} scanned={scanned_count} candidates_unread={candidates_unread_count} "
