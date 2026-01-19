@@ -62,6 +62,9 @@ SAMI_SHARED_INBOX = "health.samisupportteam@sa.gov.au"
 COMPLETION_SUBJECT_KEYWORD = "[COMPLETED]"
 HEARTBEAT_INTERVAL_SECONDS = 300
 _staff_list_cache = None
+_safe_mode_cache = None
+_safe_mode_inbox = None
+_live_test_override = False
 
 def is_valid_completion_cc(value):
     if not isinstance(value, str):
@@ -109,6 +112,19 @@ def is_valid_unknown_domain_mode(value):
     valid_modes = {"hold_manager", "hold_apps", "hold_both"}
     return value.strip() in valid_modes
 
+def get_override_addr(overrides, key):
+    if not isinstance(overrides, dict):
+        return None
+    value = overrides.get(key)
+    if not isinstance(value, str):
+        return None
+    addr = value.strip()
+    if not addr:
+        return None
+    if "@" not in addr or "." not in addr:
+        return None
+    return addr
+
 ALLOWED_OVERRIDES = {
     "inbox_folder": lambda v: isinstance(v, str) and v.strip(),
     "processed_folder": lambda v: isinstance(v, str) and v.strip(),
@@ -119,6 +135,25 @@ ALLOWED_OVERRIDES = {
 }
 
 # ==================== SAFE_MODE ====================
+def determine_safe_mode(inbox_folder):
+    """
+    Determine SAFE_MODE status using a specific inbox folder value.
+
+    Returns: (is_safe, reason, live_test_override)
+    """
+    env_value = os.environ.get("TRANSFER_BOT_LIVE", "").strip().lower()
+    if env_value != "true":
+        return (True, "env_missing", False)
+
+    inbox_value = inbox_folder or ""
+    if "test" in inbox_value.lower():
+        test_ok = os.environ.get("TRANSFER_BOT_LIVE_TEST_OK", "").strip().lower()
+        if test_ok == "true":
+            return (False, "live_test_override", True)
+        return (True, "test_folder", False)
+
+    return (False, "live_mode_armed", False)
+
 def is_safe_mode():
     """
     Check if SAFE_MODE is active (prevents sending emails).
@@ -127,27 +162,22 @@ def is_safe_mode():
         is_safe: True if SAFE_MODE active (no sending)
         reason: String explaining why SAFE_MODE is active
     """
-    # Check environment variable
-    env_value = os.environ.get("TRANSFER_BOT_LIVE", "").strip().lower()
-    if env_value != "true":
-        return (True, "env_missing")
+    if _safe_mode_cache is not None:
+        return _safe_mode_cache
+    is_safe, reason, _ = determine_safe_mode(CONFIG.get("inbox_folder", ""))
+    return (is_safe, reason)
 
-    # Belt-and-suspenders: refuse to send if inbox folder contains "test"
-    inbox_folder = CONFIG.get("inbox_folder", "")
-    if "test" in inbox_folder.lower():
-        return (True, "test_folder")
-
-    # All checks passed - live mode armed
-    return (False, "live_mode_armed")
-
-def log_safe_mode_status():
-    """Log SAFE_MODE status at startup"""
-    is_safe, reason = is_safe_mode()
+def log_safe_mode_status(inbox_folder=None):
+    """Log SAFE_MODE status"""
+    inbox_value = inbox_folder if inbox_folder is not None else CONFIG.get("inbox_folder", "")
+    is_safe, reason, override_active = determine_safe_mode(inbox_value)
+    if override_active:
+        log(f"LIVE_TEST_OVERRIDE_ENABLED inbox_folder={inbox_value}", "INFO")
     if is_safe:
         if reason == "env_missing":
             log("SAFE_MODE_ACTIVE reason=env_missing (TRANSFER_BOT_LIVE not set to 'true')", "WARN")
         elif reason == "test_folder":
-            log(f"SAFE_MODE_ACTIVE reason=test_folder inbox_folder={CONFIG.get('inbox_folder', '')}", "WARN")
+            log(f"SAFE_MODE_ACTIVE reason=test_folder inbox_folder={inbox_value}", "WARN")
         log("*** NO EMAILS WILL BE SENT IN SAFE_MODE ***", "WARN")
     else:
         log("LIVE_MODE_ARMED - emails will be sent", "WARN")
@@ -225,11 +255,62 @@ def build_completion_mailto(to_addr, cc_addr, subject):
 
 def prepend_completion_hotlink_html(html, mailto_url):
     html_notice = (
-        '<p><b>✅ Mark job complete:</b> '
+        '<p><b>Mark job complete:</b> '
         f'<a href="{mailto_url}">Click to notify requester (CC SAMI)</a></p>'
         "<hr/>"
     )
     return html_notice + (html or "")
+
+def build_completion_mailto_url(to_email, cc_email, subject):
+    to_value = str(to_email).strip() if to_email else ""
+    if not to_value or "@" not in to_value:
+        return ""
+    cc_value = str(cc_email).strip() if cc_email else ""
+    subject_value = "" if subject is None else str(subject)
+    params = []
+    if cc_value:
+        params.append(f"cc={quote(cc_value)}")
+    params.append(f"subject={quote(subject_value)}")
+    return f"mailto:{to_value}?{'&'.join(params)}"
+
+def inject_completion_hotlink(fwd, original_sender_email, original_subject, sami_inbox, mode_out=None):
+    if fwd is None:
+        return False
+    mailto_subject = f"{COMPLETION_SUBJECT_KEYWORD} {original_subject}".strip()
+    mailto_url = build_completion_mailto_url(original_sender_email, sami_inbox, mailto_subject)
+    if not mailto_url:
+        return False
+    html_notice = (
+        '<p><b>Mark job complete:</b> '
+        f'<a href="{mailto_url}">Click to notify requester (CC SAMI)</a></p>'
+        "<hr/>"
+    )
+    text_notice = (
+        "Mark job complete:\n"
+        f"{mailto_url}\n"
+        "-----\n"
+    )
+    use_html = False
+    try:
+        if getattr(fwd, "BodyFormat", None) == 2:
+            use_html = True
+    except Exception:
+        pass
+    if fwd.HTMLBody:
+        use_html = True
+    if use_html:
+        try:
+            fwd.BodyFormat = 2
+        except Exception:
+            pass
+        fwd.HTMLBody = html_notice + (fwd.HTMLBody or "")
+        mode = "HTML"
+    else:
+        fwd.Body = text_notice + (fwd.Body or "")
+        mode = "TEXT"
+    if mode_out is not None:
+        mode_out.append(mode)
+    return True
 
 def extract_subject_from_body(body_text):
     if not body_text:
@@ -334,7 +415,7 @@ def maybe_emit_heartbeat(mailbox, inbox_folder, processed_folder):
     now_ts = time.time()
     if now_ts - _last_heartbeat_ts >= HEARTBEAT_INTERVAL_SECONDS:
         append_stats(
-            f"HEARTBEAT mailbox={mailbox} inbox={inbox_folder} processed={processed_folder}",
+            f"HEARTBEAT inbox={inbox_folder} processed={processed_folder}",
             "bot",
             "system",
             "HEARTBEAT",
@@ -423,12 +504,19 @@ def atomic_write_json(path, data, *, state_name=""):
         dir_name = os.path.dirname(path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
-        tmp_path = f"{path}.tmp"
+        tmp_path = f"{path}.tmp.{os.getpid()}"
         with open(tmp_path, 'w') as f:
             json.dump(data, f, indent=4, default=str)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, path)
+        for attempt in range(3):
+            try:
+                os.replace(tmp_path, path)
+                break
+            except PermissionError:
+                time.sleep(0.05 * (attempt + 1))
+        else:
+            raise PermissionError("replace_failed")
         return True
     except Exception as e:
         log(f"STATE_WRITE_FAIL state={state_name} path={path} error={e}", "ERROR")
@@ -481,7 +569,7 @@ def find_mailbox_root(namespace, mailbox_name):
                 continue
     except Exception:
         pass
-    log(f"FOLDER_NOT_FOUND mailbox={mailbox_name}", "ERROR")
+    log("FOLDER_NOT_FOUND mailbox=(configured)", "ERROR")
     return None
 
 def find_mailbox_root_robust(namespace, mailbox_spec):
@@ -511,7 +599,7 @@ def find_mailbox_root_robust(namespace, mailbox_spec):
                 continue
     except Exception:
         pass
-    log(f"FOLDER_NOT_FOUND mailbox={mailbox_spec}", "ERROR")
+    log("FOLDER_NOT_FOUND mailbox=(configured)", "ERROR")
     if top_level_names:
         log(f"MAILBOX_ENUM top_level={','.join(top_level_names)}", "INFO")
     return None
@@ -567,6 +655,20 @@ def resolve_folder(root, folder_spec):
     if "\\" in folder_spec or "/" in folder_spec:
         return resolve_folder_by_path(root, folder_spec), "PATH_RESOLVE"
     return resolve_folder_recursive(root, folder_spec), "RECURSIVE_SEARCH"
+
+def get_or_create_subfolder(parent_folder, name):
+    if not parent_folder or not name:
+        return None
+    try:
+        for folder in parent_folder.Folders:
+            try:
+                if folder.Name == name:
+                    return folder
+            except Exception:
+                continue
+        return parent_folder.Folders.Add(name)
+    except Exception:
+        return None
 
 def get_folder_path_safe(folder):
     """Best-effort folder path for logs"""
@@ -673,6 +775,38 @@ def load_domain_policy(path=None):
     log(f"POLICY_LOADED path={path}", "INFO")
     return policy, True
 
+def get_known_domains(policy):
+    if not isinstance(policy, dict):
+        return set()
+    domains = []
+    for key in (
+        "internal_domains",
+        "external_image_request_domains",
+        "system_notification_domains",
+        "always_hold_domains",
+        "vendor_domains"
+    ):
+        value = policy.get(key, [])
+        if isinstance(value, list):
+            domains.extend(value)
+    return {d.lower().strip() for d in domains if isinstance(d, str) and d.strip()}
+
+def is_domain_known(sender_email, known_domains):
+    if not sender_email or not isinstance(known_domains, set) or not known_domains:
+        return False
+    email_str = str(sender_email).strip()
+    if "<" in email_str and ">" in email_str:
+        try:
+            email_str = email_str.split("<", 1)[1].split(">", 1)[0].strip()
+        except Exception:
+            return False
+    if "@" not in email_str:
+        return False
+    domain = email_str.split("@")[-1].strip().lower()
+    if not domain:
+        return False
+    return domain in known_domains
+
 def classify_sender_domain(domain, policy):
     """
     Classify sender domain based on policy.
@@ -719,6 +853,53 @@ def is_sami_support_staff(sender_email, policy):
     sami_staff = [email.lower().strip() for email in policy.get("sami_support_staff", [])]
 
     return sender_lower in sami_staff
+
+def send_manager_hold_notification(outlook_app, manager_email, original_msg, reason, quarantine_folder_name):
+    if not outlook_app:
+        log("MANAGER_HOLD_NOTIFY_ERROR OutlookUnavailable", "ERROR")
+        return False
+    if not manager_email:
+        log("MANAGER_HOLD_NOTIFY_SKIPPED_NO_MANAGER", "ERROR")
+        return False
+    try:
+        mail = outlook_app.CreateItem(0)
+        mail.To = manager_email
+        try:
+            subject = original_msg.Subject or ""
+        except Exception:
+            subject = ""
+        mail.Subject = f"HOLD – Unknown Domain: {subject}"
+        try:
+            sender_email = original_msg.SenderEmailAddress or ""
+        except Exception:
+            sender_email = ""
+        sender_domain = ""
+        if "@" in sender_email:
+            sender_domain = sender_email.split("@")[-1].lower().strip()
+        try:
+            received_time = original_msg.ReceivedTime
+            received_str = received_time.strftime("%d %b %Y %H:%M") if received_time else ""
+        except Exception:
+            received_str = ""
+        mail.Body = (
+            f"From: {sender_email}\n"
+            f"Domain: {sender_domain}\n"
+            f"Received: {received_str}\n"
+            f"Subject: {subject}\n"
+            f"Action: moved to Inbox/{quarantine_folder_name}\n"
+            f"Reason: {reason}\n\n"
+            "If this sender is legitimate, please contact the system administrator to whitelist this domain."
+        )
+        is_safe, safe_reason = is_safe_mode()
+        if is_safe:
+            log("MANAGER_HOLD_NOTIFY_SUPPRESSED_SAFE_MODE", "WARN")
+            return False
+        mail.Send()
+        log("MANAGER_HOLD_NOTIFY_SENT", "INFO")
+        return True
+    except Exception as e:
+        log(f"MANAGER_HOLD_NOTIFY_ERROR {type(e).__name__}", "ERROR")
+        return False
 
 def get_roster_state():
     """Load roster state from JSON"""
@@ -960,7 +1141,7 @@ def add_to_watchdog(msg_id, subject, assigned_to, sender, risk_type):
         "escalation_count": 0
     }
     save_watchdog(watchdog)
-    log(f"🚨 Added to watchdog: {subject[:50]}... -> {assigned_to}", "CRITICAL")
+    log(f"WATCHDOG_ADDED msg_id={msg_id}", "CRITICAL")
 
 def remove_from_watchdog(msg_id):
     """Remove completed ticket from watchdog"""
@@ -1156,25 +1337,36 @@ def process_inbox():
     # Load domain policy
     domain_policy, policy_valid = load_domain_policy()
     policy_source = "valid" if policy_valid else "invalid_fallback"
+    known_domains = get_known_domains(domain_policy) if policy_valid else set()
+    allowlist_valid = bool(known_domains)
+    if not allowlist_valid:
+        log("ALLOWLIST_INVALID_FAILSAFE", "ERROR")
     hib_noise_rule = domain_policy.get("hib_noise") if isinstance(domain_policy.get("hib_noise"), dict) else {}
 
     # Extract domain routing settings from overrides
-    apps_cc_addr = overrides.get("apps_cc_addr")
-    manager_cc_addr = overrides.get("manager_cc_addr")
+    apps_cc_addr = get_override_addr(overrides, "apps_cc_addr")
+    manager_cc_addr = get_override_addr(overrides, "manager_cc_addr")
     if isinstance(apps_cc_addr, str) and ";" in apps_cc_addr:
         apps_cc_count = len([part for part in (p.strip() for p in apps_cc_addr.split(";")) if part])
         log(f"CC_MULTI_RECIPIENTS key=apps_cc_addr count={apps_cc_count}", "INFO")
     if isinstance(manager_cc_addr, str) and ";" in manager_cc_addr:
         manager_cc_count = len([part for part in (p.strip() for p in manager_cc_addr.split(";")) if part])
         log(f"CC_MULTI_RECIPIENTS key=manager_cc_addr count={manager_cc_count}", "INFO")
+    apps_cc_list = [part for part in (p.strip() for p in (apps_cc_addr or "").split(";")) if part]
     unknown_domain_mode = overrides.get("unknown_domain_mode", "hold_manager")
     completion_workflow_enabled = CONFIG.get("enable_completion_workflow", False)
     completion_cc_enabled = completion_workflow_enabled and CONFIG.get("enable_completion_cc", True)
     effective_completion_cc = overrides.get("completion_cc_addr", COMPLETION_CC_ADDR) if overrides else COMPLETION_CC_ADDR
     if overrides and overrides.get("completion_cc_addr") and effective_completion_cc != COMPLETION_CC_ADDR:
         log("OVERRIDE_APPLIED key=completion_cc_addr", "INFO")
+    global _safe_mode_cache, _safe_mode_inbox, _live_test_override
+    is_safe, safe_reason, override_active = determine_safe_mode(effective_config.get("inbox_folder", ""))
+    _safe_mode_cache = (is_safe, safe_reason)
+    _safe_mode_inbox = effective_config.get("inbox_folder", "")
+    _live_test_override = override_active
+    log_safe_mode_status(_safe_mode_inbox)
     log(
-        f"TICK_START tick_id={tick_id} mailbox={effective_config['mailbox']} "
+        f"TICK_START tick_id={tick_id} mailbox=(configured) "
         f"inbox_folder={effective_config['inbox_folder']} processed_folder={effective_config['processed_folder']}",
         "INFO"
     )
@@ -1200,7 +1392,7 @@ def process_inbox():
             
             inbox, inbox_method = resolve_folder(mailbox, effective_config["inbox_folder"])
             if not inbox:
-                log(f"FOLDER_NOT_FOUND inbox_folder={effective_config['inbox_folder']} mailbox={effective_config['mailbox']}", "ERROR")
+                log(f"FOLDER_NOT_FOUND inbox_folder={effective_config['inbox_folder']} mailbox=(configured)", "ERROR")
                 log(f"FOLDER_RESOLVE_FAILED kind=inbox method={inbox_method} tried_roots=mailbox", "ERROR")
                 log(f"TICK_SKIP tick_id={tick_id} reason=INBOX_FOLDER_NOT_FOUND", "ERROR")
                 return
@@ -1220,7 +1412,7 @@ def process_inbox():
                 if processed:
                     break
             if not processed:
-                log(f"FOLDER_NOT_FOUND processed_folder={effective_config['processed_folder']} mailbox={effective_config['mailbox']}", "ERROR")
+                log(f"FOLDER_NOT_FOUND processed_folder={effective_config['processed_folder']} mailbox=(configured)", "ERROR")
                 log(f"FOLDER_RESOLVE_FAILED kind=processed method={processed_method} tried_roots={','.join(tried_roots)}", "ERROR")
                 log(f"TICK_SKIP tick_id={tick_id} reason=PROCESSED_FOLDER_NOT_FOUND", "ERROR")
                 return
@@ -1249,7 +1441,12 @@ def process_inbox():
             if quarantine:
                 log(f"FOLDER_RESOLVED kind=quarantine path={get_folder_path_safe(quarantine)}", "INFO")
             else:
-                log(f"FOLDER_NOT_FOUND quarantine_folder={effective_config['quarantine_folder']} mailbox={effective_config['mailbox']}", "WARN")
+                log(f"FOLDER_NOT_FOUND quarantine_folder={effective_config['quarantine_folder']} mailbox=(configured)", "WARN")
+                quarantine = get_or_create_subfolder(inbox, effective_config["quarantine_folder"])
+                if quarantine:
+                    log(f"FOLDER_CREATED kind=quarantine path={get_folder_path_safe(quarantine)}", "INFO")
+                else:
+                    log(f"FOLDER_CREATE_FAIL kind=quarantine name={effective_config['quarantine_folder']}", "ERROR")
             
             items_total = 0
             unread_count = 0
@@ -1373,7 +1570,8 @@ def process_inbox():
                     else:
                         msg_id = str(hash(subject + sender_email))
                     if message_key.startswith("fallback:"):
-                        log(f"LEDGER_FALLBACK_KEY {message_key}", "WARN")
+                        msg_id = identity.get("entry_id") or identity.get("conversation_id") or ""
+                        log(f"LEDGER_FALLBACK_KEY msg_id={msg_id}", "WARN")
                     
                     if message_key in processed_ledger:
                         log(f"LEDGER_SKIP {message_key}", "WARN")
@@ -1472,11 +1670,9 @@ def process_inbox():
                     
                     # ===== SMART FILTER =====
                     if is_internal_reply(sender_email, subject, staff_list):
-                        log(f"\u2705 Skipped internal reply from {sender_email}: {subject[:50]}...")
+                        msg_id = getattr(msg, "EntryID", "") or getattr(msg, "ConversationID", "") or ""
+                        log(f"SMART_FILTER_SKIP msg_id={msg_id}", "INFO")
                         append_stats(subject, "completed", sender_email, "normal", domain_bucket, "SMART_FILTER_COMPLETION", policy_source)
-                        msg.UnRead = False
-                        msg.Move(processed)
-                        
                         processed_ledger[message_key] = {
                             "ts": datetime.now().isoformat(),
                             "assigned_to": "completed",
@@ -1494,6 +1690,65 @@ def process_inbox():
                             log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
                             log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
                             return
+                        msg.UnRead = False
+                        msg.Move(processed)
+                        processed_count += 1
+                        continue
+
+                    # ===== UNKNOWN DOMAIN HOLD =====
+                    allowlist_reason = "ALLOWLIST_INVALID_FAILSAFE" if not allowlist_valid else "UNKNOWN_DOMAIN"
+                    if not allowlist_valid or not is_domain_known(sender_email, known_domains):
+                        if not quarantine:
+                            log("HOLD_UNKNOWN_DOMAIN_FAIL reason=quarantine_missing", "ERROR")
+                            errors_count += 1
+                            continue
+                        processed_ledger[message_key] = {
+                            "ts": datetime.now().isoformat(),
+                            "assigned_to": "hold",
+                            "risk": "normal",
+                            "reason": "HOLD_UNKNOWN_DOMAIN"
+                        }
+                        if identity.get("entry_id"):
+                            processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
+                        if identity.get("store_id"):
+                            processed_ledger[message_key]["store_id"] = identity.get("store_id")
+                        if identity.get("internet_message_id"):
+                            processed_ledger[message_key]["internet_message_id"] = identity.get("internet_message_id")
+                        if conversation_id:
+                            processed_ledger[message_key]["conversation_id"] = conversation_id
+                        if not save_processed_ledger(processed_ledger):
+                            log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
+                            log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
+                            return
+                        try:
+                            msg.UnRead = False
+                            msg.Move(quarantine)
+                        except Exception:
+                            log("HOLD_UNKNOWN_DOMAIN_FAIL reason=move_failed", "ERROR")
+                            errors_count += 1
+                            continue
+                        manager_email = manager_cc_addr
+                        outlook_app = None
+                        try:
+                            outlook_app = win32com.client.Dispatch("Outlook.Application")
+                        except Exception:
+                            outlook_app = None
+                        notified = send_manager_hold_notification(
+                            outlook_app,
+                            manager_email,
+                            msg,
+                            allowlist_reason,
+                            effective_config["quarantine_folder"]
+                        )
+                        append_stats(
+                            subject,
+                            "hold",
+                            sender_email,
+                            "normal",
+                            "unknown",
+                            "HOLD_UNKNOWN_DOMAIN",
+                            policy_source
+                        )
                         processed_count += 1
                         continue
                     
@@ -1516,8 +1771,8 @@ def process_inbox():
                     is_completion = False
 
                     # Get policy addresses
-                    policy_manager = domain_policy.get("manager_email", "")
-                    policy_apps_specialists = domain_policy.get("apps_specialists", [])
+                    policy_manager = manager_cc_addr or ""
+                    policy_apps_specialists = apps_cc_list
 
                     if hib_noise_match:
                         action_taken = "hib_noise_suppressed"
@@ -1541,7 +1796,8 @@ def process_inbox():
                             is_completion = True
                             action_taken = "COMPLETION"
                             assignee = "completed"
-                            log(f"COMPLETION sender={sender_email} reason=SAMI_SUPPORT_STAFF", "INFO")
+                            msg_id = getattr(msg, "EntryID", "") or getattr(msg, "ConversationID", "") or ""
+                            log(f"COMPLETION reason=SAMI_SUPPORT_STAFF msg_id={msg_id}", "INFO")
                         else:
                             # Non-SAMI internal sender - round-robin to staff
                             assignee = get_next_staff()
@@ -1616,38 +1872,28 @@ def process_inbox():
                         skipped_count += 1
                         continue
 
+                    processed_ledger[message_key] = {
+                        "ts": datetime.now().isoformat(),
+                        "assigned_to": assignee,
+                        "risk": risk_level
+                    }
+                    if action_taken == "hib_noise_suppressed":
+                        processed_ledger[message_key]["reason"] = "hib_noise_suppressed"
+                    if identity.get("entry_id"):
+                        processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
+                    if identity.get("store_id"):
+                        processed_ledger[message_key]["store_id"] = identity.get("store_id")
+                    if identity.get("internet_message_id"):
+                        processed_ledger[message_key]["internet_message_id"] = identity.get("internet_message_id")
+                    if conversation_id:
+                        processed_ledger[message_key]["conversation_id"] = conversation_id
+                    if not save_processed_ledger(processed_ledger):
+                        log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
+                        log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
+                        return
+
                     # Forward email
                     fwd = msg.Forward()
-                    try:
-                        requester = sender_email.strip() if isinstance(sender_email, str) else ""
-                        if requester and "@" in requester:
-                            assignee_email = assignee if isinstance(assignee, str) else ""
-                            staff_set = {s.lower() for s in staff_list}
-                            if assignee_email.lower() == "hold":
-                                skip_reason = "hold_route"
-                            elif action_taken == "UNKNOWN_DOMAIN":
-                                skip_reason = "unknown_domain"
-                            elif action_taken == "IMAGE_REQUEST_EXTERNAL":
-                                skip_reason = "external_image_request"
-                            elif assignee_email.lower() not in staff_set:
-                                skip_reason = "assignee_not_staff"
-                            else:
-                                skip_reason = ""
-                            clean_subject = strip_bot_subject_tags(subject)
-                            mailto_subject = f"{COMPLETION_SUBJECT_KEYWORD} {clean_subject}".strip()
-                            mailto_link = build_completion_mailto(requester, SAMI_SHARED_INBOX, mailto_subject)
-                            msg_id = getattr(msg, "EntryID", "") or getattr(msg, "ConversationID", "") or ""
-                            safe_mode = is_safe_mode()[0]
-                            if mailto_link and not skip_reason:
-                                fwd.HTMLBody = prepend_completion_hotlink_html(fwd.HTMLBody or "", mailto_link)
-                                log(f"HOTLINK_INJECTED safe_mode={safe_mode} msg_id={msg_id}", "INFO")
-                            elif skip_reason:
-                                log(
-                                    f"HOTLINK_SKIPPED safe_mode={safe_mode} msg_id={msg_id} reason={skip_reason}",
-                                    "INFO"
-                                )
-                    except Exception:
-                        log("COMPLETION_HOTLINK_FAIL", "WARN")
 
                     # Add recipients based on routing decision
                     if action_taken == "hib_noise_suppressed":
@@ -1759,6 +2005,38 @@ def process_inbox():
                     
                     fwd.SentOnBehalfOfName = CONFIG["mailbox"]
 
+                    try:
+                        requester = sender_email.strip() if isinstance(sender_email, str) else ""
+                        assignee_email = assignee if isinstance(assignee, str) else ""
+                        staff_set = {s.lower() for s in staff_list}
+                        if is_completion_subject(subject):
+                            skip_reason = "completion_email"
+                        elif assignee_email.lower() not in staff_set:
+                            skip_reason = "assignee_not_staff"
+                        elif not requester or "@" not in requester:
+                            skip_reason = "requester_unavailable"
+                        else:
+                            skip_reason = ""
+                        msg_id = getattr(msg, "EntryID", "") or getattr(msg, "ConversationID", "") or ""
+                        if skip_reason:
+                            log(f"COMPLETION_HOTLINK_SKIPPED reason={skip_reason} msg_id={msg_id}", "INFO")
+                        else:
+                            mode_out = []
+                            injected = inject_completion_hotlink(
+                                fwd,
+                                requester,
+                                subject,
+                                SAMI_SHARED_INBOX,
+                                mode_out
+                            )
+                            if injected:
+                                mode = mode_out[0] if mode_out else "HTML"
+                                log(f"COMPLETION_HOTLINK_ADDED mode={mode} msg_id={msg_id}", "INFO")
+                            else:
+                                log(f"COMPLETION_HOTLINK_SKIPPED reason=inject_failed msg_id={msg_id}", "WARN")
+                    except Exception:
+                        log("COMPLETION_HOTLINK_FAIL", "WARN")
+
                     # SAFE_MODE enforcement
                     is_safe, safe_reason = is_safe_mode()
                     if is_safe:
@@ -1772,34 +2050,12 @@ def process_inbox():
                             processed_ledger = updated_ledger
                     
                     if action_taken != "hib_noise_suppressed":
-                        log(f"[{risk_level.upper()}] Assigned to {assignee}: {subject[:50]}...")
+                        log(f"ASSIGNED msg_id={msg_id} risk={risk_level}", "INFO")
 
                     # Archive original (no subject mutation per constraints)
                     append_stats(subject, assignee, sender_email, risk_level, domain_bucket, action_taken, policy_source)
                     msg.UnRead = False
                     msg.Move(processed)
-                    prev_reason = processed_ledger.get(message_key, {}).get("reason")
-                    processed_ledger[message_key] = {
-                        "ts": datetime.now().isoformat(),
-                        "assigned_to": assignee,
-                        "risk": risk_level
-                    }
-                    if action_taken == "hib_noise_suppressed":
-                        processed_ledger[message_key]["reason"] = "hib_noise_suppressed"
-                    if identity.get("entry_id"):
-                        processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
-                    if identity.get("store_id"):
-                        processed_ledger[message_key]["store_id"] = identity.get("store_id")
-                    if identity.get("internet_message_id"):
-                        processed_ledger[message_key]["internet_message_id"] = identity.get("internet_message_id")
-                    if conversation_id:
-                        processed_ledger[message_key]["conversation_id"] = conversation_id
-                    if prev_reason:
-                        processed_ledger[message_key]["reason"] = prev_reason
-                    if not save_processed_ledger(processed_ledger):
-                        log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
-                        log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
-                        return
                     processed_count += 1
                     
                 except Exception as e:
@@ -1832,6 +2088,9 @@ def process_inbox():
             # Don't crash - will retry next cycle
     finally:
         _staff_list_cache = None
+        _safe_mode_cache = None
+        _safe_mode_inbox = None
+        _live_test_override = False
         duration_ms = int((time.perf_counter() - start_time) * 1000)
         log(
             f"TICK_END tick_id={tick_id} scanned={scanned_count} candidates_unread={candidates_unread_count} "
@@ -1854,16 +2113,16 @@ if __name__ == "__main__":
     log("=" * 60)
     log("🏥 Helpdesk Clinical Safety Bot v2.2")
     log("=" * 60)
-    log(f"Mailbox: {CONFIG['mailbox']}")
-    log(f"Manager: {CONFIG['manager']}")
+    overrides = load_settings_overrides(SETTINGS_OVERRIDES_PATH)
+    manager_override = get_override_addr(overrides, "manager_cc_addr")
+    apps_override = get_override_addr(overrides, "apps_cc_addr")
+    log("Mailbox: (configured)")
+    log(f"Manager: ({'override set' if manager_override else 'not set'})")
+    log(f"Apps CC: ({'override set' if apps_override else 'not set'})")
     log(f"SLA Limit (review-only): {CONFIG['sla_minutes']} minutes")
     log(f"Staff loaded: {len(get_staff_list())} members")
     log("=" * 60)
 
-    # Log SAFE_MODE status
-    log_safe_mode_status()
-    log("=" * 60)
-    
     # Initialize watchdog file if needed
     if not os.path.exists(FILES["watchdog"]):
         save_watchdog({})
