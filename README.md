@@ -52,6 +52,47 @@ If an incoming sender or domain is not recognized by policy, the item is placed 
 - Dashboard does not talk to Outlook directly
 - Dashboard writes only `settings_overrides.json`; the bot applies changes on the next tick
 
+## Local Dashboard (Read-Only Operations Console)
+
+### Purpose
+
+The dashboard is a local-only visibility and oversight tool. It does not interact with Outlook and does not participate in email processing.
+
+### Features
+
+- Bot status (SAFE/LIVE)
+- Workload metrics
+- Staff assignment counts
+- Completion counts
+- Risk level visibility
+- SLA tracking overview (WIP)
+- Current configuration overrides
+
+### Explicit Non-Capabilities (Critical)
+
+- No Outlook access
+- No email send, forward, or delete
+- No modification of bot-owned state
+- No routing or completion actions
+
+### Configuration Model
+
+- `settings_overrides.json` is the single override input
+- The dashboard writes overrides; the bot reads them on the next tick
+- Inputs are validated and applied with audit-safe logging
+
+### Security & Data Handling
+
+- Local-only execution
+- No cloud services or external connectivity
+- No PHI exposure
+- No email body rendering
+
+### Intended Audience
+
+- Managers, operations, and audit
+- Not a ticketing or triage interface
+
 ## Configuration Files (Canonical)
 
 - `staff.txt`: on-rotation staff list (one address per line)
