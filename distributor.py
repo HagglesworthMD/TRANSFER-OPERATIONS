@@ -44,6 +44,8 @@ CONFIG = {
     "quarantine_folder": "Transfer Bot Quarantine"
 }
 
+RISK_FILTER_ENABLED = False
+
 FILES = {
     "staff": "staff.txt",
     "state": "roster_state.json",
@@ -113,7 +115,7 @@ def is_valid_unknown_domain_mode(value):
     return value.strip() in valid_modes
 
 def is_urgent_watchdog_disabled(overrides):
-    return bool(overrides.get("disable_urgent_watchdog", False))
+    return (not RISK_FILTER_ENABLED) or bool(overrides.get("disable_urgent_watchdog", False))
 
 def get_override_addr(overrides, key):
     if not isinstance(overrides, dict):
@@ -253,7 +255,7 @@ def build_completion_mailto(to_addr, cc_addr, subject):
     subject_value = "" if subject is None else str(subject)
     params = []
     if cc_value:
-        params.append(f"cc={quote(cc_value)}")
+        params.append(f"cc={cc_value}")
     params.append(f"subject={quote(subject_value)}")
     return f"mailto:{to_value}?{'&'.join(params)}"
 
@@ -273,7 +275,7 @@ def build_completion_mailto_url(to_email, cc_email, subject):
     subject_value = "" if subject is None else str(subject)
     params = []
     if cc_value:
-        params.append(f"cc={quote(cc_value)}")
+        params.append(f"cc={cc_value}")
     params.append(f"subject={quote(subject_value)}")
     return f"mailto:{to_value}?{'&'.join(params)}"
 
@@ -1774,7 +1776,7 @@ def process_inbox():
                         continue
                     
                     # ===== RISK DETECTION =====
-                    if hib_noise_match:
+                    if hib_noise_match or not RISK_FILTER_ENABLED:
                         risk_level = "normal"
                         risk_reason = None
                     else:
@@ -2005,7 +2007,7 @@ def process_inbox():
                             )
                             fwd.BodyFormat = 1
                             fwd.Body = body_text + "\r\n"
-                            fwd.Subject = f"CRITICAL | {clean_subject}"
+                            fwd.Subject = msg.Subject or ""
                         else:
                             banner_header = f"{risk_level.upper()} RISK TICKET"
                             risk_banner = (
