@@ -52,3 +52,4 @@ data/snapshot_salt.txt
 
 # Ignore local-only helper scripts
 local_scripts/
+hib_watchdog.json

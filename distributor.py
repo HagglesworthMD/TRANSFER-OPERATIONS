@@ -64,6 +64,13 @@ COMPLETION_CC_ADDR = "completion.placeholder@example.invalid"
 SAMI_SHARED_INBOX = "health.samisupportteam@sa.gov.au"
 COMPLETION_SUBJECT_KEYWORD = "[COMPLETED]"
 HEARTBEAT_INTERVAL_SECONDS = 300
+
+# HIB routing and burst detection
+HIB_FOLDER_NAME = "04_HIB"
+HIB_WATCHDOG_PATH = "hib_watchdog.json"
+HIB_BURST_WINDOW_MIN = 30
+HIB_BURST_THRESHOLD = 15
+HIB_BURST_COOLDOWN_MIN = 60
 _staff_list_cache = None
 _safe_mode_cache = None
 _safe_mode_inbox = None
@@ -598,6 +605,77 @@ def atomic_write_json(path, data, *, state_name=""):
     except Exception as e:
         log(f"STATE_WRITE_FAIL state={state_name} path={path} error={e}", "ERROR")
         return False
+
+def _parse_iso_safe(iso_str):
+    if not isinstance(iso_str, str) or not iso_str:
+        return None
+    try:
+        return datetime.fromisoformat(iso_str)
+    except Exception:
+        return None
+
+def _send_hib_burst_alert(outlook_app, to_email, subject, body):
+    if not outlook_app or not to_email:
+        return False
+    try:
+        is_safe, safe_reason = is_safe_mode()
+        if is_safe:
+            log(f"HIB_BURST_ALERT_SUPPRESSED to={to_email} reason={safe_reason}", "WARN")
+            return False
+        mail = outlook_app.CreateItem(0)
+        mail.To = to_email
+        mail.Subject = subject
+        mail.Body = body
+        mail.Send()
+        log(f"HIB_BURST_ALERT_SENT to={to_email}", "INFO")
+        return True
+    except Exception as e:
+        log(f"HIB_BURST_ALERT_FAIL to={to_email} error={e}", "ERROR")
+        return False
+
+def hib_watchdog_record_and_maybe_alert(now_dt, outlook_app, manager_email, apps_email):
+    try:
+        state = safe_load_json(HIB_WATCHDOG_PATH, {}, required=False, state_name="hib_watchdog")
+        if not isinstance(state, dict):
+            log("HIB_WATCHDOG_RESET reason=not_object", "WARN")
+            state = {}
+        hib_events = state.get("hib_events")
+        if not isinstance(hib_events, list):
+            log("HIB_WATCHDOG_RESET reason=bad_hib_events", "WARN")
+            hib_events = []
+        hib_events.append(now_dt.isoformat())
+        cutoff = now_dt - timedelta(minutes=HIB_BURST_WINDOW_MIN)
+        trimmed = []
+        for ts in hib_events:
+            parsed = _parse_iso_safe(ts)
+            if parsed is not None and parsed >= cutoff:
+                trimmed.append(ts)
+        hib_events = trimmed
+        count = len(hib_events)
+        last_alert_dt = _parse_iso_safe(state.get("last_alert_iso"))
+        cooldown_ok = True
+        if last_alert_dt is not None:
+            if (now_dt - last_alert_dt) < timedelta(minutes=HIB_BURST_COOLDOWN_MIN):
+                cooldown_ok = False
+        if count >= HIB_BURST_THRESHOLD and cooldown_ok:
+            subj = f"HIB Spike: {HIB_BURST_THRESHOLD}+ in {HIB_BURST_WINDOW_MIN}min"
+            time_str = now_dt.strftime("%d %b %Y %H:%M")
+            body_lines = []
+            body_lines.append(f"Time: {time_str}")
+            body_lines.append(f"Count: {count}")
+            body_lines.append(f"Window: {HIB_BURST_WINDOW_MIN} min")
+            body_lines.append(f"Folder: {HIB_FOLDER_NAME}")
+            body_lines.append("")
+            body_lines.append("High HIB volume detected. Investigate.")
+            body = "\n".join(body_lines)
+            _send_hib_burst_alert(outlook_app, manager_email, subj, body)
+            _send_hib_burst_alert(outlook_app, apps_email, subj, body)
+            state["last_alert_iso"] = now_dt.isoformat()
+            log(f"HIB_BURST_ALERT count={count} window={HIB_BURST_WINDOW_MIN}", "INFO")
+        state["hib_events"] = hib_events
+        atomic_write_json(HIB_WATCHDOG_PATH, state, state_name="hib_watchdog")
+    except Exception as e:
+        log(f"HIB_WATCHDOG_ERROR error={e}", "ERROR")
 
 # ==================== FILE OPERATIONS ====================
 def get_staff_list():
@@ -1660,6 +1738,12 @@ def process_inbox():
             else:
                 log(f"FOLDER_NOT_FOUND completed_folder={effective_config['completed_folder']}", "WARN")
 
+            hib_folder = get_or_create_subfolder(inbox, HIB_FOLDER_NAME)
+            if hib_folder:
+                log(f"FOLDER_RESOLVED kind=hib path={get_folder_path_safe(hib_folder)}", "INFO")
+            else:
+                log(f"FOLDER_CREATE_FAIL kind=hib name={HIB_FOLDER_NAME}", "ERROR")
+
             items_total = 0
             unread_count = 0
             default_item_type = "?"
@@ -1810,15 +1894,34 @@ def process_inbox():
                             if all_ok and any_ok:
                                 hib_noise_match = True
                     if hib_noise_match:
-                        log("HIB_NOISE_MATCH action=hib_noise_suppressed", "INFO")
-                        notify_apps = bool(hib_noise_rule.get("notify_apps", False))
-                        notify_manager = bool(hib_noise_rule.get("notify_manager", False))
-                        cc_value = ""
-                        if notify_apps and isinstance(apps_cc_addr, str) and apps_cc_addr.strip():
-                            cc_value = apps_cc_addr
-                        if notify_manager and isinstance(manager_cc_addr, str) and manager_cc_addr.strip():
-                            cc_value = f"{cc_value};{manager_cc_addr}" if cc_value else manager_cc_addr
-                        hib_cc_override = cc_value
+                        log(f"ROUTE=HIB subject={subject[:50]}", "INFO")
+                        if hib_folder:
+                            try:
+                                _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                                if not _sb_ok:
+                                    log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+                                else:
+                                    msg.UnRead = False
+                                    msg.Move(hib_folder)
+                                    processed_ledger[message_key] = {
+                                        "ts": datetime.now().isoformat(),
+                                        "assigned_to": "hib",
+                                        "risk": "normal",
+                                        "route": "HIB"
+                                    }
+                                    if identity.get("entry_id"):
+                                        processed_ledger[message_key]["entry_id"] = identity["entry_id"]
+                                    save_processed_ledger(processed_ledger)
+                                    append_stats(subject, "hib", sender_email, "normal", "hib", "ROUTE_HIB", policy_source)
+                                    try:
+                                        hib_outlook = win32com.client.Dispatch("Outlook.Application")
+                                    except Exception:
+                                        hib_outlook = None
+                                    hib_watchdog_record_and_maybe_alert(datetime.now(), hib_outlook, manager_cc_addr, apps_cc_addr)
+                                    processed_count += 1
+                            except Exception as e:
+                                log(f"HIB_ROUTE_ERROR error={e}", "ERROR")
+                        continue
 
                     # ===== COMPLETION DETECTION =====
                     try:
