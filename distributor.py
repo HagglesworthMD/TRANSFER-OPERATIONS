@@ -261,6 +261,12 @@ def is_completion_subject(subject):
         return False
     return COMPLETION_SUBJECT_KEYWORD.lower() in str(subject).lower()
 
+def is_staff_completed_confirmation(sender_email, subject, staff_set):
+    """Return True if sender is staff and subject contains [COMPLETED]."""
+    if not sender_email or not subject:
+        return False
+    return sender_email.lower().strip() in staff_set and is_completion_subject(subject)
+
 def prepend_banner(existing_body, banner):
     body = existing_body or ""
     return (banner + body) if banner else body
@@ -1525,6 +1531,16 @@ def process_inbox():
                 else:
                     log(f"FOLDER_CREATE_FAIL kind=quarantine name={effective_config['quarantine_folder']}", "ERROR")
             
+            completed_dest = None
+            for _, root in root_candidates:
+                completed_dest, _ = resolve_folder(root, effective_config["completed_folder"])
+                if completed_dest:
+                    break
+            if completed_dest:
+                log(f"FOLDER_RESOLVED kind=completed path={get_folder_path_safe(completed_dest)}", "INFO")
+            else:
+                log(f"FOLDER_NOT_FOUND completed_folder={effective_config['completed_folder']}", "WARN")
+
             items_total = 0
             unread_count = 0
             default_item_type = "?"
@@ -1721,6 +1737,39 @@ def process_inbox():
                                 if not _sb_ok:
                                     log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
                                     append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+                                else:
+                                    msg.Move(processed)
+                                processed_count += 1
+                                continue
+                            else:
+                                # Staff [COMPLETED] with no prior ledger entry — bypass quarantine
+                                log(f"BYPASS_QUARANTINE_STAFF_COMPLETED_CONFIRMATION msg_id={msg_id} sender={sender_email}", "INFO")
+                                processed_ledger[message_key] = {
+                                    "ts": datetime.now().isoformat(),
+                                    "assigned_to": "completed",
+                                    "risk": "normal",
+                                    "completion_source": "staff_completed_confirmation"
+                                }
+                                if identity.get("entry_id"):
+                                    processed_ledger[message_key]["entry_id"] = identity["entry_id"]
+                                if identity.get("store_id"):
+                                    processed_ledger[message_key]["store_id"] = identity["store_id"]
+                                if identity.get("internet_message_id"):
+                                    processed_ledger[message_key]["internet_message_id"] = identity["internet_message_id"]
+                                if conversation_id:
+                                    processed_ledger[message_key]["conversation_id"] = conversation_id
+                                append_stats(subject, "completed", sender_email, "normal", domain_bucket, "STAFF_COMPLETED_CONFIRMATION", policy_source)
+                                if not save_processed_ledger(processed_ledger):
+                                    log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
+                                    log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
+                                    return
+                                msg.UnRead = False
+                                _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                                if not _sb_ok:
+                                    log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+                                    append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+                                elif completed_dest:
+                                    msg.Move(completed_dest)
                                 else:
                                     msg.Move(processed)
                                 processed_count += 1

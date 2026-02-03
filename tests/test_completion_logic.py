@@ -71,5 +71,18 @@ class CompletionLogicTests(unittest.TestCase):
         self.assertNotIn('cc=', mailto_none)
 
 
+    def test_staff_completed_confirmation_positive(self):
+        staff_set = {'staff@example.com'}
+        self.assertTrue(distributor.is_staff_completed_confirmation('staff@example.com', '[COMPLETED] Test job', staff_set))
+        self.assertTrue(distributor.is_staff_completed_confirmation('Staff@Example.com', 'RE: [completed] done', staff_set))
+
+    def test_staff_completed_confirmation_negative_non_staff(self):
+        staff_set = {'staff@example.com'}
+        self.assertFalse(distributor.is_staff_completed_confirmation('outsider@other.com', '[COMPLETED] Test job', staff_set))
+        self.assertFalse(distributor.is_staff_completed_confirmation('staff@example.com', 'no keyword', staff_set))
+        self.assertFalse(distributor.is_staff_completed_confirmation('', '[COMPLETED] x', staff_set))
+        self.assertFalse(distributor.is_staff_completed_confirmation(None, '[COMPLETED] x', staff_set))
+
+
 if __name__ == '__main__':
     unittest.main()
