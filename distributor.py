@@ -1389,6 +1389,23 @@ def resolve_sender_smtp(msg):
     except Exception:
         return ""
 
+def is_internal_sender(smtp_addr):
+    """Check if sender is internal (@sa.gov.au)."""
+    if not smtp_addr or not isinstance(smtp_addr, str):
+        return False
+    return smtp_addr.lower().strip().endswith("@sa.gov.au")
+
+def is_staff_sender(smtp_addr, staff_list):
+    """Check if sender is in staff list. Accepts list or set."""
+    if not smtp_addr or not isinstance(smtp_addr, str):
+        return False
+    if not staff_list:
+        return False
+    addr_lower = smtp_addr.lower().strip()
+    if isinstance(staff_list, set):
+        return addr_lower in staff_list
+    return addr_lower in {s.lower().strip() for s in staff_list}
+
 def extract_sender_domain(sender_email):
     """
     Extract domain from sender email address.
@@ -1879,6 +1896,36 @@ def process_inbox():
                     if message_key in processed_ledger:
                         log(f"LEDGER_SKIP {message_key}", "WARN")
                         skipped_count += 1
+                        continue
+
+                    # Internal non-staff safety guard
+                    if is_internal_sender(sender_email) and not is_staff_sender(sender_email, staff_list):
+                        log(f"ROUTE manager reason=internal_sender_not_in_staff sender={sender_email}", "INFO")
+                        try:
+                            _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                            if _sb_ok and manager_cc_addr:
+                                fwd = msg.Forward()
+                                fwd.Recipients.Add(manager_cc_addr)
+                                fwd.Subject = f"[REVIEW] Internal non-staff: {subject}"
+                                fwd.Body = f"Internal sender not in staff.txt.\nSender: {sender_email}\n\n" + (fwd.Body or "")
+                                is_safe, _ = is_safe_mode()
+                                if not is_safe:
+                                    fwd.Send()
+                                msg.UnRead = False
+                                msg.Move(processed)
+                                processed_ledger[message_key] = {
+                                    "ts": datetime.now().isoformat(),
+                                    "assigned_to": "manager_review",
+                                    "risk": "normal",
+                                    "route": "internal_non_staff"
+                                }
+                                if identity.get("entry_id"):
+                                    processed_ledger[message_key]["entry_id"] = identity["entry_id"]
+                                save_processed_ledger(processed_ledger)
+                                append_stats(subject, "manager_review", sender_email, "normal", domain_bucket, "INTERNAL_NON_STAFF", policy_source)
+                                processed_count += 1
+                        except Exception as e:
+                            log(f"INTERNAL_NON_STAFF_ERROR error={e}", "ERROR")
                         continue
 
                     hib_noise_match = False
