@@ -1898,6 +1898,12 @@ def process_inbox():
                         skipped_count += 1
                         continue
 
+                    # Internal staff guard - skip round-robin but allow completion
+                    if is_internal_sender(sender_email) and is_staff_sender(sender_email, staff_list):
+                        if not is_completion_subject(subject):
+                            log(f"INTERNAL_STAFF_EMAIL skip_new_job sender={sender_email}", "INFO")
+                            continue
+
                     # Internal non-staff safety guard
                     if is_internal_sender(sender_email) and not is_staff_sender(sender_email, staff_list):
                         log(f"ROUTE manager reason=internal_sender_not_in_staff sender={sender_email}", "INFO")
