@@ -291,7 +291,42 @@ def prepend_completion_hotlink_html(html, mailto_url):
     )
     return html_notice + (html or "")
 
-def build_completion_mailto_url(to_email, cc_email, subject):
+COMPLETION_MAILTO_BODY_MAX_LEN = 1800
+
+def build_completion_mailto_body(msg):
+    """Build plain-text body for completion mailto with original email context."""
+    if msg is None:
+        return "", False
+    try:
+        sender_name = getattr(msg, "SenderName", "") or ""
+        sender_email = resolve_sender_smtp(msg) or getattr(msg, "SenderEmailAddress", "") or ""
+        subject = getattr(msg, "Subject", "") or ""
+        try:
+            received_time = msg.ReceivedTime
+            received_str = received_time.strftime("%d %b %Y %H:%M") if received_time else ""
+        except Exception:
+            received_str = ""
+        original_body = ""
+        try:
+            original_body = msg.Body or ""
+        except Exception:
+            pass
+        header_block = (
+            f"From: {sender_name} <{sender_email}>\r\n"
+            f"Received: {received_str}\r\n"
+            f"Subject: {subject}\r\n"
+            "----- Original request -----\r\n"
+        )
+        full_body = header_block + original_body
+        truncated = False
+        if len(full_body) > COMPLETION_MAILTO_BODY_MAX_LEN:
+            full_body = full_body[:COMPLETION_MAILTO_BODY_MAX_LEN] + "\r\n...(truncated)"
+            truncated = True
+        return full_body, truncated
+    except Exception:
+        return "", False
+
+def build_completion_mailto_url(to_email, cc_email, subject, body=None):
     to_value = str(to_email).strip() if to_email else ""
     if not to_value or "@" not in to_value:
         return ""
@@ -301,13 +336,25 @@ def build_completion_mailto_url(to_email, cc_email, subject):
     if cc_value:
         params.append(f"cc={cc_value}")
     params.append(f"subject={quote(subject_value)}")
+    if body:
+        params.append(f"body={quote(body, safe='')}")
     return f"mailto:{to_value}?{'&'.join(params)}"
 
-def inject_completion_hotlink(fwd, original_sender_email, original_subject, sami_inbox, mode_out=None):
+def inject_completion_hotlink(fwd, original_sender_email, original_subject, sami_inbox, mode_out=None, \
+        original_msg=None):
     if fwd is None:
         return False
+    body_text, truncated = build_completion_mailto_body(original_msg)
+    if body_text:
+        log(f"COMPLETE_MAILTO_BODY len={len(body_text)} truncated={truncated}", "INFO")
+    body_param = body_text or None
     mailto_subject = f"{COMPLETION_SUBJECT_KEYWORD} {original_subject}".strip()
-    mailto_url = build_completion_mailto_url(original_sender_email, sami_inbox, mailto_subject)
+    mailto_url = build_completion_mailto_url(
+        original_sender_email,
+        sami_inbox,
+        mailto_subject,
+        body=body_param,
+    )
     if not mailto_url:
         return False
     html_notice = (
@@ -2294,7 +2341,8 @@ def process_inbox():
                                 requester,
                                 subject,
                                 SAMI_SHARED_INBOX,
-                                mode_out
+                                mode_out,
+                                original_msg=msg,
                             )
                             if injected:
                                 mode = mode_out[0] if mode_out else "HTML"
