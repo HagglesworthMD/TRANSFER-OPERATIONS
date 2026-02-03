@@ -1305,6 +1305,27 @@ def is_internal_reply(sender_email, subject, staff_list):
 
     return is_staff and (is_reply or is_bot_tagged)
 
+def is_jira_completion_notification(sender_domain, subject, msg):
+    """
+    Detect automated Jira completion notifications from Jones Radiology.
+    Returns True if all criteria match:
+    - Sender domain contains "jonesradiology.atlassian.net"
+    - Subject contains "[COMPLETED]"
+    - Body contains "has been resolved" AND "re-open the ticket"
+    """
+    if not sender_domain or not subject:
+        return False
+    domain_lower = sender_domain.lower()
+    if "jonesradiology.atlassian.net" not in domain_lower:
+        return False
+    if "[completed]" not in subject.lower():
+        return False
+    try:
+        body_text = (msg.Body or "")[:2000].lower()
+    except Exception:
+        return False
+    return "has been resolved" in body_text and "re-open the ticket" in body_text
+
 def build_unknown_notice_block():
     return (
         "\n\n"
@@ -1859,6 +1880,38 @@ def process_inbox():
                             "ts": datetime.now().isoformat(),
                             "assigned_to": "completed",
                             "risk": "normal"
+                        }
+                        if identity.get("entry_id"):
+                            processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
+                        if identity.get("store_id"):
+                            processed_ledger[message_key]["store_id"] = identity.get("store_id")
+                        if identity.get("internet_message_id"):
+                            processed_ledger[message_key]["internet_message_id"] = identity.get("internet_message_id")
+                        if conversation_id:
+                            processed_ledger[message_key]["conversation_id"] = conversation_id
+                        if not save_processed_ledger(processed_ledger):
+                            log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
+                            log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
+                            return
+                        msg.UnRead = False
+                        _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                        if not _sb_ok:
+                            log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+                            append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+                        else:
+                            msg.Move(processed)
+                        processed_count += 1
+                        continue
+
+                    # ===== JIRA COMPLETION NOTIFICATION FILTER =====
+                    if is_jira_completion_notification(sender_domain, subject, msg):
+                        log(f"JIRA_COMPLETION_SKIP msg_id={msg_id} sender={sender_email}", "INFO")
+                        append_stats(subject, "non_actionable", sender_email, "normal", domain_bucket, "JIRA_COMPLETION_NOTIFICATION", policy_source)
+                        processed_ledger[message_key] = {
+                            "ts": datetime.now().isoformat(),
+                            "assigned_to": "non_actionable",
+                            "risk": "normal",
+                            "reason": "JIRA_COMPLETION_NOTIFICATION"
                         }
                         if identity.get("entry_id"):
                             processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
