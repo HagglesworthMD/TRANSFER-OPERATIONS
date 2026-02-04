@@ -18,7 +18,9 @@ import csv
 import schedule
 import atexit
 import subprocess
+import traceback
 import re
+import html
 from urllib.parse import quote
 from datetime import datetime, timedelta
 
@@ -299,6 +301,70 @@ def prepend_completion_hotlink_html(html, mailto_url):
     return html_notice + (html or "")
 
 COMPLETION_MAILTO_BODY_MAX_LEN = 1800
+COMPLETION_MAILTO_MAX_URL_LEN = 1800
+COMPLETION_MAILTO_URL_MAX_LEN = 1800
+COMPLETION_MAILTO_STRIP_SAFELINKS = True
+COMPLETION_MAILTO_STRIP_DISCLAIMER = True
+
+def _html_to_text_minimal(html_str):
+    if not html_str:
+        return ""
+    text = html_str
+    for tag in ("<br>", "<br/>", "<br />", "</p>", "</div>", "</tr>", "</li>"):
+        text = re.sub(re.escape(tag), "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+def get_completion_source_body_text(msg):
+    try:
+        body = getattr(msg, "Body", "") or ""
+    except Exception:
+        body = ""
+    body_text = body.strip()
+    if body_text:
+        return body_text, "body"
+    try:
+        html_body = getattr(msg, "HTMLBody", "") or ""
+    except Exception:
+        html_body = ""
+    html_text = _html_to_text_minimal(html_body)
+    if html_text:
+        return html_text, "html"
+    return "", "none"
+
+def sanitize_completion_excerpt(text):
+    if not text:
+        return ""
+    lines = text.splitlines()
+    out = []
+    blank_run = 0
+    for line in lines:
+        raw = line.strip()
+        lower = raw.lower()
+        if COMPLETION_MAILTO_STRIP_DISCLAIMER and "this email and any attachments are confidential" in lower:
+            break
+        if COMPLETION_MAILTO_STRIP_SAFELINKS and "safelinks.protection.outlook.com" in lower:
+            continue
+        if lower.startswith("http://") or lower.startswith("https://"):
+            continue
+        if "<tel:" in lower or lower.startswith("tel:"):
+            continue
+        if raw == "":
+            blank_run += 1
+            if blank_run > 2:
+                continue
+            out.append("")
+            continue
+        blank_run = 0
+        out.append(raw)
+    while out and out[0] == "":
+        out.pop(0)
+    while out and out[-1] == "":
+        out.pop()
+    return "\r\n".join(out)
 
 def build_completion_mailto_body(msg):
     """Build plain-text body for completion mailto with original email context."""
@@ -313,11 +379,8 @@ def build_completion_mailto_body(msg):
             received_str = received_time.strftime("%d %b %Y %H:%M") if received_time else ""
         except Exception:
             received_str = ""
-        original_body = ""
-        try:
-            original_body = msg.Body or ""
-        except Exception:
-            pass
+        original_body, source = get_completion_source_body_text(msg)
+        original_body = sanitize_completion_excerpt(original_body)
         header_block = (
             f"From: {sender_name} <{sender_email}>\r\n"
             f"Received: {received_str}\r\n"
@@ -339,13 +402,59 @@ def build_completion_mailto_url(to_email, cc_email, subject, body=None):
         return ""
     cc_value = str(cc_email).strip() if cc_email else ""
     subject_value = "" if subject is None else str(subject)
-    params = []
+    base_params = []
     if cc_value:
-        params.append(f"cc={cc_value}")
-    params.append(f"subject={quote(subject_value)}")
-    if body:
-        params.append(f"body={quote(body, safe='')}")
-    return f"mailto:{to_value}?{'&'.join(params)}"
+        base_params.append(f"cc={quote(cc_value, safe='@')}")
+    base_params.append(f"subject={quote(subject_value, safe='')}")
+    base_url = f"mailto:{to_value}?{'&'.join(base_params)}"
+    if not body:
+        log(f"COMPLETION_MAILTO url_len={len(base_url)} body_included=no reason=no_body", "INFO")
+        return base_url
+    encoded_body = quote(body, safe='')
+    full_url = base_url + "&body=" + encoded_body
+    if len(full_url) <= COMPLETION_MAILTO_URL_MAX_LEN:
+        log(f"COMPLETION_MAILTO url_len={len(full_url)} body_included=yes", "INFO")
+        return full_url
+    header_part = ""
+    excerpt_part = body
+    lines = body.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "-----" or stripped == "----- Original request -----":
+            header_part = "\r\n".join(lines[:i + 1]) + "\r\n"
+            excerpt_part = "\r\n".join(lines[i + 1:])
+            break
+    trimmed = False
+    for _ in range(8):
+        if len(full_url) <= COMPLETION_MAILTO_URL_MAX_LEN:
+            break
+        if not excerpt_part:
+            break
+        keep_len = int(len(excerpt_part) * 0.8)
+        if keep_len >= len(excerpt_part):
+            keep_len = max(0, len(excerpt_part) - 200)
+        excerpt_part = excerpt_part[:keep_len]
+        body = header_part + excerpt_part
+        encoded_body = quote(body, safe='')
+        full_url = base_url + "&body=" + encoded_body
+        trimmed = True
+    if len(full_url) <= COMPLETION_MAILTO_URL_MAX_LEN:
+        if trimmed:
+            log(f"COMPLETION_MAILTO_TRIM url_len={len(full_url)} max={COMPLETION_MAILTO_URL_MAX_LEN} reason=url_too_long", "INFO")
+        log(f"COMPLETION_MAILTO url_len={len(full_url)} body_included=yes", "INFO")
+        return full_url
+    if header_part:
+        body = header_part
+        encoded_body = quote(body, safe='')
+        full_url = base_url + "&body=" + encoded_body
+        if len(full_url) <= COMPLETION_MAILTO_URL_MAX_LEN:
+            log(f"COMPLETION_MAILTO_TRIM url_len={len(full_url)} max={COMPLETION_MAILTO_URL_MAX_LEN} reason=url_too_long", "INFO")
+            log(f"COMPLETION_MAILTO url_len={len(full_url)} body_included=yes", "INFO")
+            return full_url
+    if trimmed:
+        log(f"COMPLETION_MAILTO_TRIM url_len={len(base_url)} max={COMPLETION_MAILTO_URL_MAX_LEN} reason=url_too_long", "INFO")
+    log(f"COMPLETION_MAILTO url_len={len(base_url)} body_included=no reason=too_long", "INFO")
+    return base_url
 
 def inject_completion_hotlink(fwd, original_sender_email, original_subject, sami_inbox, mode_out=None, \
         original_msg=None):
@@ -364,9 +473,12 @@ def inject_completion_hotlink(fwd, original_sender_email, original_subject, sami
     )
     if not mailto_url:
         return False
+    mailto_url_html = mailto_url.replace("&", "&amp;")
+    href_amp = "yes" if "&amp;" in mailto_url_html else "no"
+    log(f"COMPLETION_HOTLINK href_amp={href_amp}", "INFO")
     html_notice = (
         '<p><b>Mark job complete:</b> '
-        f'<a href="{mailto_url}">Click to notify requester (CC SAMI)</a></p>'
+        f'<a href="{mailto_url_html}">Click to notify requester (CC SAMI)</a></p>'
         "<hr/>"
     )
     text_notice = (
@@ -677,6 +789,34 @@ def hib_watchdog_record_and_maybe_alert(now_dt, outlook_app, manager_email, apps
     except Exception as e:
         log(f"HIB_WATCHDOG_ERROR error={e}", "ERROR")
 
+def is_hib_notification(msg):
+    try:
+        to_line = getattr(msg, "To", "") or ""
+    except Exception:
+        to_line = ""
+    try:
+        cc_line = getattr(msg, "CC", "") or ""
+    except Exception:
+        cc_line = ""
+    to_cc = (to_line + " " + cc_line).lower()
+    if "@chib.had.sa.gov.au" in to_cc:
+        return True
+    try:
+        body = (getattr(msg, "Body", "") or "")[:4000]
+    except Exception:
+        body = ""
+    body_lower = body.lower()
+    if "whib.had.sa.gov.au" in body_lower:
+        return True
+    try:
+        subject = getattr(msg, "Subject", "") or ""
+    except Exception:
+        subject = ""
+    subject_lower = subject.lower()
+    if subject_lower.startswith("error:"):
+        if ("ensportal.visualtrace" in body_lower) or ("imgproduction" in body_lower):
+            return True
+    return False
 # ==================== FILE OPERATIONS ====================
 def get_staff_list():
     """Load staff list from file"""
@@ -1485,6 +1625,36 @@ def is_jira_automation_notification(sender_domain, subject, msg):
     matches = sum(1 for p in jira_patterns if p in body_text)
     return matches >= 2
 
+def is_jones_completion_notification(msg):
+    sender_email = ""
+    try:
+        sender_email = resolve_sender_smtp(msg) or getattr(msg, "SenderEmailAddress", "") or ""
+    except Exception:
+        sender_email = ""
+    try:
+        sender_name = getattr(msg, "SenderName", "") or ""
+    except Exception:
+        sender_name = ""
+    try:
+        subject = getattr(msg, "Subject", "") or ""
+    except Exception:
+        subject = ""
+    try:
+        body = (getattr(msg, "Body", "") or "")[:4000]
+    except Exception:
+        body = ""
+
+    sender_email_lower = sender_email.lower()
+    sender_name_lower = sender_name.lower()
+    subject_lower = subject.lower()
+    body_lower = body.lower()
+
+    sender_jones = ("jones" in sender_email_lower) or ("jones" in sender_name_lower)
+    subject_hit = ("completed" in subject_lower) or ("completion" in subject_lower)
+    body_hit = ("has been completed" in body_lower) or ("completed" in body_lower)
+
+    return sender_jones and (subject_hit or body_hit)
+
 def build_unknown_notice_block():
     return (
         "\n\n"
@@ -1839,6 +2009,7 @@ def process_inbox():
                 return
             
             for msg in msgs:
+                staff_sender_flag = False
                 try:
                     # Store mismatch warning (once per tick)
                     if target_store and not _store_warned:
@@ -1898,6 +2069,39 @@ def process_inbox():
                         skipped_count += 1
                         continue
 
+                    if is_hib_notification(msg):
+                        subject_prefix = re.sub(r"\d", "X", subject or "")[:60]
+                        log(f"HIB_MOVE msg_id={msg_id} sender={sender_email} subject_prefix={subject_prefix}", "INFO")
+                        hib_moved = False
+                        if not hib_folder:
+                            log("HIB_MOVE_SKIP reason=hib_folder_missing", "WARN")
+                        else:
+                            try:
+                                _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                                if not _sb_ok:
+                                    log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+                                else:
+                                    msg.UnRead = False
+                                    msg.Move(hib_folder)
+                                    hib_now = locals().get("now_dt") or datetime.now()
+                                    processed_ledger[message_key] = {
+                                        "ts": hib_now.isoformat(),
+                                        "assigned_to": "hib",
+                                        "risk": "normal",
+                                        "route": "HIB"
+                                    }
+                                    if identity.get("entry_id"):
+                                        processed_ledger[message_key]["entry_id"] = identity["entry_id"]
+                                    save_processed_ledger(processed_ledger)
+                                    append_stats(subject, "hib", sender_email, "normal", "hib", "ROUTE_HIB", policy_source)
+                                    hib_outlook = locals().get("outlook_app")
+                                    hib_watchdog_record_and_maybe_alert(hib_now, hib_outlook, manager_cc_addr, apps_cc_addr)
+                                    processed_count += 1
+                                    hib_moved = True
+                            except Exception as e:
+                                log(f"HIB_ROUTE_ERROR error={e}", "ERROR")
+                        if hib_moved:
+                            continue
                     # Internal staff guard - skip round-robin but allow completion
                     if is_internal_sender(sender_email) and is_staff_sender(sender_email, staff_list):
                         if not is_completion_subject(subject):
@@ -1978,9 +2182,9 @@ def process_inbox():
 
                     # ===== COMPLETION DETECTION =====
                     try:
-                        is_staff_sender = sender_email in staff_list
+                        staff_sender_flag = sender_email in staff_list
                         keyword_hit = is_completion_subject(subject)
-                        if is_staff_sender and keyword_hit:
+                        if staff_sender_flag and keyword_hit:
                             if conversation_id:
                                 match_key = find_ledger_key_by_conversation_id(processed_ledger, conversation_id)
                             else:
@@ -2047,7 +2251,7 @@ def process_inbox():
                                 processed_count += 1
                                 continue
                         is_reply = subject.lower().strip().startswith("re:")
-                        if completion_cc_enabled and is_staff_sender and is_reply and message_has_completion_cc(msg, effective_completion_cc):
+                        if completion_cc_enabled and staff_sender_flag and is_reply and message_has_completion_cc(msg, effective_completion_cc):
                             if conversation_id:
                                 match_key = find_ledger_key_by_conversation_id(processed_ledger, conversation_id)
                             else:
@@ -2362,6 +2566,18 @@ def process_inbox():
                         log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
                         return
 
+                    if action_taken == "SYSTEM_NOTIFICATION" and is_jones_completion_notification(msg):
+                        log("FILTER_JONES_COMPLETION action=move_processed", "INFO")
+                        append_stats(subject, assignee, sender_email, risk_level, domain_bucket, action_taken, policy_source)
+                        msg.UnRead = False
+                        _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                        if not _sb_ok:
+                            log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+                            append_stats(subject, "skipped", sender_email, risk_level, domain_bucket, "WRONG_MAILBOX", policy_source)
+                        else:
+                            msg.Move(processed)
+                        processed_count += 1
+                        continue
                     # Forward email
                     fwd = msg.Forward()
 
@@ -2541,7 +2757,8 @@ def process_inbox():
                     processed_count += 1
 
                 except Exception as e:
-                    log(f"Error processing email: {e}", "ERROR")
+                    stack = "".join(traceback.format_tb(e.__traceback__))
+                    log(f"Error processing email: exc_type={type(e).__name__} stack={stack}", "ERROR")
                     append_stats(subject, "error", sender_email, "PROCESSING_ERROR", domain_bucket if 'domain_bucket' in locals() else "", "PROCESSING_ERROR", policy_source if 'policy_source' in locals() else "")
                     errors_count += 1
                     poison_counts = load_poison_counts() or {}
