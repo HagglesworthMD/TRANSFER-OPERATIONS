@@ -24,6 +24,10 @@ processed_ledger.json
 roster_state.json
 urgent_watchdog.json
 settings_overrides.json
+*.bak
+*.tmp.*
+poison_counts.json
+processed_ledger.json.tmp.*
 
 # Ignore local-only exports/reports
 INBOX SCRAPE/
