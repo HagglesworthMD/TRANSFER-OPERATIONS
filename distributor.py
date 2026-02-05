@@ -817,6 +817,23 @@ def is_hib_notification(msg):
         if ("ensportal.visualtrace" in body_lower) or ("imgproduction" in body_lower):
             return True
     return False
+
+def hib_contains_16110(msg):
+    """Check if HIB message contains '16110' in subject or body (best-effort)"""
+    try:
+        subject = getattr(msg, "Subject", "") or ""
+    except Exception:
+        subject = ""
+    if "16110" in subject:
+        return True
+    try:
+        body = (getattr(msg, "Body", "") or "")[:4000]
+    except Exception:
+        body = ""
+    if "16110" in body:
+        return True
+    return False
+
 # ==================== FILE OPERATIONS ====================
 def get_staff_list():
     """Load staff list from file"""
@@ -2092,6 +2109,25 @@ def process_inbox():
                                     }
                                     if identity.get("entry_id"):
                                         processed_ledger[message_key]["entry_id"] = identity["entry_id"]
+                                    # Check for 16110 escalation before saving ledger
+                                    if hib_contains_16110(msg) and apps_cc_addr and not processed_ledger[message_key].get("apps_fwd"):
+                                        try:
+                                            fwd = msg.Forward()
+                                            fwd.Recipients.Add(apps_cc_addr)
+                                            is_safe, _ = is_safe_mode()
+                                            if not is_safe:
+                                                fwd.Send()
+                                            processed_ledger[message_key]["apps_fwd"] = True
+                                            eid = processed_ledger[message_key].get("entry_id")
+                                            if not eid:
+                                                try:
+                                                    eid = getattr(msg, "EntryID", "")
+                                                except:
+                                                    eid = ""
+                                            entry_tail = (eid or "")[-8:]
+                                            log(f"HIB_16110_FORWARD apps_team=yes entryid_tail={entry_tail}", "INFO")
+                                        except Exception as e:
+                                            log(f"HIB_16110_FORWARD_ERROR error={e}", "ERROR")
                                     save_processed_ledger(processed_ledger)
                                     append_stats(subject, "hib", sender_email, "normal", "hib", "ROUTE_HIB", policy_source)
                                     hib_outlook = locals().get("outlook_app")
@@ -2168,6 +2204,25 @@ def process_inbox():
                                     }
                                     if identity.get("entry_id"):
                                         processed_ledger[message_key]["entry_id"] = identity["entry_id"]
+                                    # Check for 16110 escalation before saving ledger
+                                    if hib_contains_16110(msg) and apps_cc_addr and not processed_ledger[message_key].get("apps_fwd"):
+                                        try:
+                                            fwd = msg.Forward()
+                                            fwd.Recipients.Add(apps_cc_addr)
+                                            is_safe, _ = is_safe_mode()
+                                            if not is_safe:
+                                                fwd.Send()
+                                            processed_ledger[message_key]["apps_fwd"] = True
+                                            eid = processed_ledger[message_key].get("entry_id")
+                                            if not eid:
+                                                try:
+                                                    eid = getattr(msg, "EntryID", "")
+                                                except:
+                                                    eid = ""
+                                            entry_tail = (eid or "")[-8:]
+                                            log(f"HIB_16110_FORWARD apps_team=yes entryid_tail={entry_tail}", "INFO")
+                                        except Exception as e:
+                                            log(f"HIB_16110_FORWARD_ERROR error={e}", "ERROR")
                                     save_processed_ledger(processed_ledger)
                                     append_stats(subject, "hib", sender_email, "normal", "hib", "ROUTE_HIB", policy_source)
                                     try:
