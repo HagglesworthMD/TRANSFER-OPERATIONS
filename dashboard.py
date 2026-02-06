@@ -664,7 +664,7 @@ with st.expander("Workload Distribution", expanded=False):
         st.info("No activity for selected period.")
     else:
         # Filter out 'completed' and 'bot' entries
-        staff_only = df_filtered[(df_filtered['Assigned To'] != 'completed') & (~df_filtered['Assigned To'].str.lower().str.contains('bot', na=False))]
+        staff_only = df_filtered[(df_filtered['Assigned To'] != 'completed') & (~df_filtered['Assigned To'].str.lower().str.contains('bot', na=False)) & (~df_filtered['Assigned To'].str.lower().str.contains('system_notification', na=False)) & (~df_filtered['Assigned To'].str.lower().str.contains('hib', na=False)) & (~df_filtered['Assigned To'].str.lower().str.contains('hold', na=False)) & (~df_filtered['Assigned To'].str.lower().str.contains('manager_review', na=False))]
         workload = staff_only['Assigned To'].value_counts()
         if workload.empty:
             st.info("No staff assignments for selected period.")
@@ -687,17 +687,18 @@ with st.expander("Workload Distribution", expanded=False):
                     ),
                     textinfo='label+percent',
                     textposition='outside',
-                    textfont=dict(size=12, color=chart_text_color)
+                    textfont=dict(size=12, color=chart_text_color),
+                    hovertemplate='%{label}<br>Assignments: %{value}<br>(%{percent})<extra></extra>'
                 )
             ])
             fig.update_layout(
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
                 font=dict(color=chart_text_color, size=12),
-                margin=dict(l=20, r=20, t=30, b=20),
+                margin=dict(l=120, r=120, t=50, b=60),
                 showlegend=True,
                 legend=dict(orientation='h', yanchor='bottom', y=-0.15, xanchor='center', x=0.5),
-                height=320
+                height=420
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -797,15 +798,55 @@ with st.expander("External Request Sources", expanded=False):
                 st.dataframe(make_arrow_safe_df(top_df), width="stretch", height=250)
 
                 # ---- Per-Staff KPIs ----
-                source_df = sender_df
+                source_df = df_filtered
                 has_event_schema = all(col in source_df.columns for col in ["event_type", "msg_key", "assigned_ts", "completed_ts", "duration_sec", "assigned_to"])
+                def _staff_key(raw):
+                    if raw is None:
+                        return "unknown"
+                    s = str(raw).strip()
+                    if not s:
+                        return "unknown"
+                    lower = s.lower()
+                    if "@" in lower:
+                        return lower
+                    return "name:" + lower
+
+                def _staff_label(raw):
+                    if raw is None:
+                        return "Unknown"
+                    s = str(raw).strip()
+                    if not s:
+                        return "Unknown"
+                    lower = s.lower()
+                    if "@" in lower:
+                        local = lower.split("@", 1)[0]
+                        return local.replace(".", " ").replace("_", " ").strip().title()
+                    return s.title()
+
+                label_map = pd.Series(dtype="object")
                 if has_event_schema:
                     events_df, _dropped = dashboard_core.prepare_event_frame(source_df)
                     now_local = datetime.now()
                     active_df, completed_df, _assigned_latest_df = dashboard_core.build_work_queue_views(events_df, now_local)
+                    events_df["staff_key"] = events_df["assigned_to"].apply(_staff_key)
+                    if not active_df.empty:
+                        active_df["staff_key"] = active_df["assigned_to"].apply(_staff_key)
+                    else:
+                        active_df["staff_key"] = pd.Series(dtype="object")
+                    if not completed_df.empty:
+                        completed_df["staff_key"] = completed_df["assigned_to"].apply(_staff_key)
+                    else:
+                        completed_df["staff_key"] = pd.Series(dtype="object")
+                    label_map = (
+                        events_df[["staff_key", "assigned_to"]]
+                        .dropna()
+                        .drop_duplicates(subset=["staff_key"])
+                        .set_index("staff_key")["assigned_to"]
+                        .apply(_staff_label)
+                    )
                     assigned_counts = (
                         events_df[events_df["event_type_norm"] == "ASSIGNED"]
-                        .groupby("assigned_to")
+                        .groupby("staff_key")
                         .size()
                         .rename("assigned_count")
                         if not events_df.empty
@@ -819,10 +860,22 @@ with st.expander("External Request Sources", expanded=False):
                         tmp["assigned_to"] = ""
                     tmp["assigned_to"] = tmp["assigned_to"].fillna("").astype(str).str.lower()
                     tmp = tmp[tmp["assigned_to"] != ""].copy()
+                    tmp["staff_key"] = tmp["assigned_to"].apply(_staff_key)
+                    label_map = (
+                        tmp[["staff_key", "assigned_to"]]
+                        .dropna()
+                        .drop_duplicates(subset=["staff_key"])
+                        .set_index("staff_key")["assigned_to"]
+                        .apply(_staff_label)
+                    )
                     active_df = tmp[tmp["assigned_to"] != "completed"].copy()
-                    completed_df = pd.DataFrame(columns=["assigned_to", "duration_sec_num"])
+                    if not active_df.empty:
+                        active_df["staff_key"] = active_df["assigned_to"].apply(_staff_key)
+                    else:
+                        active_df["staff_key"] = pd.Series(dtype="object")
+                    completed_df = pd.DataFrame(columns=["staff_key", "duration_sec_num"])
                     assigned_counts = (
-                        tmp.groupby("assigned_to")
+                        tmp.groupby("staff_key")
                         .size()
                         .rename("assigned_count")
                         if not tmp.empty
@@ -830,21 +883,21 @@ with st.expander("External Request Sources", expanded=False):
                     )
 
                 completed_counts = (
-                    completed_df.groupby("assigned_to")
+                    completed_df.groupby("staff_key")
                     .size()
                     .rename("completed_count")
                     if not completed_df.empty
                     else pd.Series(dtype="int64", name="completed_count")
                 )
                 active_counts = (
-                    active_df.groupby("assigned_to")
+                    active_df.groupby("staff_key")
                     .size()
                     .rename("active_count")
                     if not active_df.empty
                     else pd.Series(dtype="int64", name="active_count")
                 )
                 duration_stats = (
-                    completed_df.groupby("assigned_to")["duration_sec_num"].agg(
+                    completed_df.groupby("staff_key")["duration_sec_num"].agg(
                         median="median",
                         p90=lambda s: s.quantile(0.9),
                     )
@@ -862,7 +915,8 @@ with st.expander("External Request Sources", expanded=False):
                 staff_kpi_df = staff_kpi_df.join(completed_counts, how="left")
                 staff_kpi_df = staff_kpi_df.join(active_counts, how="left")
                 staff_kpi_df = staff_kpi_df.join(duration_stats, how="left")
-                staff_kpi_df = staff_kpi_df.fillna(0).reset_index().rename(columns={"index": "assigned_to"})
+                staff_kpi_df["assigned_to"] = staff_kpi_df.index.map(lambda k: label_map.get(k, "Unknown"))
+                staff_kpi_df = staff_kpi_df.fillna(0).reset_index(drop=True)
                 if "median" in staff_kpi_df.columns:
                     staff_kpi_df["median_min"] = (staff_kpi_df["median"] / 60.0).round(1)
                 if "p90" in staff_kpi_df.columns:
@@ -870,6 +924,21 @@ with st.expander("External Request Sources", expanded=False):
                 staff_kpi_df = staff_kpi_df.sort_values(
                     by=["active_count", "completed_count"], ascending=[False, False]
                 )
+                # Clean up columns for manager readability
+                drop_cols = [c for c in ['median', 'p90'] if c in staff_kpi_df.columns]
+                staff_kpi_df = staff_kpi_df.drop(columns=drop_cols)
+                rename_map = {
+                    'assigned_to': 'Staff Member',
+                    'assigned_count': 'Assigned',
+                    'completed_count': 'Completed',
+                    'active_count': 'Active',
+                    'median_min': 'Median (min)',
+                    'p90_min': 'P90 (min)',
+                }
+                staff_kpi_df = staff_kpi_df.rename(columns={k: v for k, v in rename_map.items() if k in staff_kpi_df.columns})
+                # Format staff names: strip email domain, title case
+                if 'Staff Member' in staff_kpi_df.columns:
+                    staff_kpi_df['Staff Member'] = staff_kpi_df['Staff Member'].apply(lambda x: x.split('@')[0].replace('.', ' ').title() if isinstance(x, str) else x)
                 st.markdown("#### Per-Staff KPIs")
                 st.dataframe(make_arrow_safe_df(staff_kpi_df), width="stretch", height=300)
 

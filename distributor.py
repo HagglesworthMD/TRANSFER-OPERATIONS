@@ -21,6 +21,7 @@ import subprocess
 import traceback
 import re
 import html
+import hashlib
 from urllib.parse import quote
 from datetime import datetime, timedelta
 
@@ -65,6 +66,7 @@ STAFF_PATH = os.path.join(os.path.dirname(__file__), "staff.txt")
 COMPLETION_CC_ADDR = "completion.placeholder@example.invalid"
 SAMI_SHARED_INBOX = "health.samisupportteam@sa.gov.au"
 COMPLETION_SUBJECT_KEYWORD = "[COMPLETED]"
+COMPLETION_SUBJECT_PREFIX = "[COMPLETED] "
 HEARTBEAT_INTERVAL_SECONDS = 300
 
 # HIB routing and burst detection
@@ -276,6 +278,45 @@ def is_staff_completed_confirmation(sender_email, subject, staff_set):
         return False
     return sender_email.lower().strip() in staff_set and is_completion_subject(subject)
 
+def compute_sami_id(msg):
+    try:
+        entry_id = getattr(msg, "EntryID", "") or ""
+    except Exception:
+        entry_id = ""
+    seed = str(entry_id).strip()
+    if not seed:
+        try:
+            received_time = getattr(msg, "ReceivedTime", None)
+            received_iso = received_time.isoformat() if received_time else ""
+        except Exception:
+            received_iso = ""
+        try:
+            sender = getattr(msg, "SenderEmailAddress", "") or ""
+        except Exception:
+            sender = ""
+        try:
+            message_class = getattr(msg, "MessageClass", "") or ""
+        except Exception:
+            message_class = ""
+        seed = f"{received_iso}|{sender}|{message_class}|fallback"
+    if not seed:
+        return ""
+    try:
+        digest = hashlib.sha1(seed.encode("utf-8")).hexdigest().upper()
+        return f"SAMI-{digest[:6]}"
+    except Exception:
+        log("SAMI_ID_COMPUTE_FAIL", "WARN")
+        return ""
+
+def ensure_sami_id_in_subject(subject: str, msg) -> str:
+    text = "" if subject is None else str(subject)
+    if "[sami-" in text.lower():
+        return text
+    sami_id = compute_sami_id(msg)
+    if not sami_id:
+        return text
+    return f"[{sami_id}] {text}".strip()
+
 def prepend_banner(existing_body, banner):
     body = existing_body or ""
     return (banner + body) if banner else body
@@ -402,6 +443,9 @@ def build_completion_mailto_url(to_email, cc_email, subject, body=None):
         return ""
     cc_value = str(cc_email).strip() if cc_email else ""
     subject_value = "" if subject is None else str(subject)
+    if not subject_value.lstrip().lower().startswith(COMPLETION_SUBJECT_KEYWORD.lower()):
+        subject_value = f"{COMPLETION_SUBJECT_PREFIX}{subject_value}".strip()
+        log("COMPLETION_SUBJECT_PREFIXED added=1", "INFO")
     base_params = []
     if cc_value:
         base_params.append(f"cc={quote(cc_value, safe='@')}")
@@ -2049,6 +2093,7 @@ def process_inbox():
                         subject = msg.Subject.strip()
                     except:
                         subject = ""
+                    subject_with_id = ensure_sami_id_in_subject(subject, msg)
                     
                     try:
                         body = msg.Body[:500] if msg.Body else ""  # First 500 chars
@@ -2152,7 +2197,7 @@ def process_inbox():
                             if _sb_ok and manager_cc_addr:
                                 fwd = msg.Forward()
                                 fwd.Recipients.Add(manager_cc_addr)
-                                fwd.Subject = f"[REVIEW] Internal non-staff: {subject}"
+                                fwd.Subject = f"[REVIEW] Internal non-staff: {subject_with_id}"
                                 fwd.Body = f"Internal sender not in staff.txt.\nSender: {sender_email}\n\n" + (fwd.Body or "")
                                 is_safe, _ = is_safe_mode()
                                 if not is_safe:
@@ -2725,7 +2770,7 @@ def process_inbox():
                             )
                             fwd.BodyFormat = 1
                             fwd.Body = body_text + "\r\n"
-                            fwd.Subject = msg.Subject or ""
+                            fwd.Subject = subject_with_id
                         else:
                             banner_header = f"{risk_level.upper()} RISK TICKET"
                             risk_banner = (
@@ -2744,6 +2789,8 @@ def process_inbox():
                             fwd.Body = (fwd.Body or "") + build_unknown_notice_block()
                             log("UNKNOWN_NOTICE_BLOCK_ADDED action=UNKNOWN_DOMAIN", "INFO")
                     
+                    if action_taken != "manager_review":
+                        fwd.Subject = subject_with_id
                     fwd.SentOnBehalfOfName = CONFIG["mailbox"]
 
                     try:
@@ -2766,7 +2813,7 @@ def process_inbox():
                             injected = inject_completion_hotlink(
                                 fwd,
                                 requester,
-                                subject,
+                                subject_with_id,
                                 SAMI_SHARED_INBOX,
                                 mode_out,
                                 original_msg=msg,
