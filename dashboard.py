@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -798,7 +798,7 @@ with st.expander("External Request Sources", expanded=False):
 
                 # ---- Per-Staff KPIs ----
                 source_df = sender_df
-                has_event_schema = all(col in source_df.columns for col in EVENT_REQUIRED_COLUMNS)
+                has_event_schema = all(col in source_df.columns for col in ["event_type", "msg_key", "assigned_ts", "completed_ts", "duration_sec", "assigned_to"])
                 if has_event_schema:
                     events_df, _dropped = dashboard_core.prepare_event_frame(source_df)
                     now_local = datetime.now()
