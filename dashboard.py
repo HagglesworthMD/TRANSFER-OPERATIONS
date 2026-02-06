@@ -796,6 +796,84 @@ with st.expander("External Request Sources", expanded=False):
             if top_df is not None:
                 st.dataframe(make_arrow_safe_df(top_df), width="stretch", height=250)
 
+                # ---- Per-Staff KPIs ----
+                source_df = sender_df
+                has_event_schema = all(col in source_df.columns for col in EVENT_REQUIRED_COLUMNS)
+                if has_event_schema:
+                    events_df, _dropped = dashboard_core.prepare_event_frame(source_df)
+                    now_local = datetime.now()
+                    active_df, completed_df, _assigned_latest_df = dashboard_core.build_work_queue_views(events_df, now_local)
+                    assigned_counts = (
+                        events_df[events_df["event_type_norm"] == "ASSIGNED"]
+                        .groupby("assigned_to")
+                        .size()
+                        .rename("assigned_count")
+                        if not events_df.empty
+                        else pd.Series(dtype="int64", name="assigned_count")
+                    )
+                else:
+                    tmp = source_df.copy()
+                    if "assigned_to" not in tmp.columns and "Assigned To" in tmp.columns:
+                        tmp["assigned_to"] = tmp["Assigned To"]
+                    if "assigned_to" not in tmp.columns:
+                        tmp["assigned_to"] = ""
+                    tmp["assigned_to"] = tmp["assigned_to"].fillna("").astype(str).str.lower()
+                    tmp = tmp[tmp["assigned_to"] != ""].copy()
+                    active_df = tmp[tmp["assigned_to"] != "completed"].copy()
+                    completed_df = pd.DataFrame(columns=["assigned_to", "duration_sec_num"])
+                    assigned_counts = (
+                        tmp.groupby("assigned_to")
+                        .size()
+                        .rename("assigned_count")
+                        if not tmp.empty
+                        else pd.Series(dtype="int64", name="assigned_count")
+                    )
+
+                completed_counts = (
+                    completed_df.groupby("assigned_to")
+                    .size()
+                    .rename("completed_count")
+                    if not completed_df.empty
+                    else pd.Series(dtype="int64", name="completed_count")
+                )
+                active_counts = (
+                    active_df.groupby("assigned_to")
+                    .size()
+                    .rename("active_count")
+                    if not active_df.empty
+                    else pd.Series(dtype="int64", name="active_count")
+                )
+                duration_stats = (
+                    completed_df.groupby("assigned_to")["duration_sec_num"].agg(
+                        median="median",
+                        p90=lambda s: s.quantile(0.9),
+                    )
+                    if (completed_df is not None and not completed_df.empty and "duration_sec_num" in completed_df.columns)
+                    else pd.DataFrame(columns=["median", "p90"])
+                )
+
+                staff_keys = sorted(set(
+                    list(getattr(assigned_counts, "index", []))
+                    + list(getattr(active_counts, "index", []))
+                    + list(getattr(completed_counts, "index", []))
+                ))
+                staff_kpi_df = pd.DataFrame(index=staff_keys)
+                staff_kpi_df = staff_kpi_df.join(assigned_counts, how="left")
+                staff_kpi_df = staff_kpi_df.join(completed_counts, how="left")
+                staff_kpi_df = staff_kpi_df.join(active_counts, how="left")
+                staff_kpi_df = staff_kpi_df.join(duration_stats, how="left")
+                staff_kpi_df = staff_kpi_df.fillna(0).reset_index().rename(columns={"index": "assigned_to"})
+                if "median" in staff_kpi_df.columns:
+                    staff_kpi_df["median_min"] = (staff_kpi_df["median"] / 60.0).round(1)
+                if "p90" in staff_kpi_df.columns:
+                    staff_kpi_df["p90_min"] = (staff_kpi_df["p90"] / 60.0).round(1)
+                staff_kpi_df = staff_kpi_df.sort_values(
+                    by=["active_count", "completed_count"], ascending=[False, False]
+                )
+                st.markdown("#### Per-Staff KPIs")
+                st.dataframe(make_arrow_safe_df(staff_kpi_df), width="stretch", height=300)
+
+
 # ==================== BOT FOLDER TARGETS ====================
 st.markdown("---")
 st.markdown("### Folder Targets")
