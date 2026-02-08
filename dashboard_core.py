@@ -178,3 +178,100 @@ def build_work_queue_views(events, now_dt):
         completed["duration_human"] = completed["duration_sec_num"].apply(format_duration_human)
         completed = completed.sort_values("completed_ts_dt", ascending=False, na_position="last")
     return active, completed, assigned_latest
+
+
+def compute_per_staff_kpis(source_df: pd.DataFrame) -> pd.DataFrame:
+    columns = ["Staff Member", "Assigned", "Completed", "Active", "Median (min)", "P90 (min)"]
+    empty = pd.DataFrame(columns=columns)
+    if source_df is None or source_df.empty:
+        return empty
+
+    has_event_schema = all(
+        col in source_df.columns
+        for col in ["event_type", "msg_key", "assigned_ts", "completed_ts", "duration_sec", "assigned_to"]
+    )
+    if has_event_schema:
+        events_df, _dropped_bad_rows = prepare_event_frame(source_df)
+    else:
+        events_df = source_df.copy()
+    if events_df is None or events_df.empty:
+        return empty
+
+    events_df = events_df.copy()
+    event_type = (
+        events_df["event_type"]
+        if "event_type" in events_df.columns
+        else pd.Series("", index=events_df.index, dtype="object")
+    )
+    events_df["event_type_norm"] = event_type.fillna("").astype(str).str.strip().str.upper()
+    action_norm = (
+        events_df["Action"].fillna("").astype(str).str.strip().str.upper()
+        if "Action" in events_df.columns
+        else pd.Series("", index=events_df.index, dtype="object")
+    )
+    blank_et = events_df["event_type_norm"].eq("")
+    is_completion_action = action_norm.isin(["STAFF_COMPLETED_CONFIRMATION", "COMPLETION_SUBJECT_KEYWORD"])
+    events_df.loc[blank_et & is_completion_action, "event_type_norm"] = "COMPLETED"
+    events_df = events_df[events_df["event_type_norm"].isin(["ASSIGNED", "COMPLETED"])].copy()
+    if events_df.empty:
+        return empty
+
+    assigned_to_norm = (
+        events_df["assigned_to"]
+        if "assigned_to" in events_df.columns
+        else pd.Series("", index=events_df.index, dtype="object")
+    )
+    assigned_to_norm = assigned_to_norm.fillna("").astype(str).str.strip().str.lower()
+    sender_norm = (
+        events_df["Sender"]
+        if "Sender" in events_df.columns
+        else pd.Series("", index=events_df.index, dtype="object")
+    )
+    sender_norm = sender_norm.fillna("").astype(str).str.strip().str.lower()
+
+    events_df["staff_email"] = assigned_to_norm
+    completed_mask = events_df["event_type_norm"].eq("COMPLETED")
+    sender_has_email = sender_norm.str.contains("@", na=False)
+    needs_sender = completed_mask & (events_df["staff_email"] == "")
+    events_df.loc[needs_sender & sender_has_email, "staff_email"] = sender_norm[needs_sender & sender_has_email]
+    events_df = events_df[events_df["staff_email"] != ""].copy()
+    if events_df.empty:
+        return empty
+
+    grouped = (
+        events_df.groupby(["staff_email", "event_type_norm"])
+        .size()
+        .unstack(fill_value=0)
+    )
+    if grouped.empty:
+        return empty
+
+    kpi_df = pd.DataFrame(index=grouped.index)
+    kpi_df["Assigned"] = grouped["ASSIGNED"] if "ASSIGNED" in grouped.columns else 0
+    kpi_df["Completed"] = grouped["COMPLETED"] if "COMPLETED" in grouped.columns else 0
+    kpi_df["Assigned"] = kpi_df["Assigned"].astype(int)
+    kpi_df["Completed"] = kpi_df["Completed"].astype(int)
+    kpi_df["Active"] = (kpi_df["Assigned"] - kpi_df["Completed"]).clip(lower=0).astype(int)
+
+    completed_df = events_df[events_df["event_type_norm"] == "COMPLETED"].copy()
+    if "duration_sec" in completed_df.columns:
+        completed_df["duration_sec_num"] = pd.to_numeric(completed_df["duration_sec"], errors="coerce")
+    else:
+        completed_df["duration_sec_num"] = pd.Series(index=completed_df.index, dtype=float)
+    completed_df["duration_min"] = completed_df["duration_sec_num"] / 60.0
+    duration_stats = (
+        completed_df.groupby("staff_email")["duration_min"].agg(
+            **{"Median (min)": "median", "P90 (min)": lambda s: s.quantile(0.9)}
+        ).round(1)
+        if not completed_df.empty
+        else pd.DataFrame(columns=["Median (min)", "P90 (min)"])
+    )
+    kpi_df = kpi_df.join(duration_stats, how="left")
+
+    kpi_df["Staff Member"] = kpi_df.index.map(
+        lambda email: str(email).split("@", 1)[0].replace(".", " ").replace("_", " ").strip().title()
+    )
+    kpi_df = kpi_df.reset_index(drop=True)
+    kpi_df = kpi_df[columns]
+    kpi_df = kpi_df.sort_values(by=["Assigned", "Staff Member"], ascending=[False, True], kind="stable").reset_index(drop=True)
+    return kpi_df
