@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transfer-Bot Command Center</title>
+    <link rel="stylesheet" href="/css/styles.css?v=3">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <script>
+        // Force reload CSS if cached
+        const link = document.querySelector('link[rel="stylesheet"]');
+        if (link) {
+            link.href = link.href.split('?')[0] + '?v=' + Date.now();
+        }
+    </script>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <h1 class="header-title">Transfer-Bot Command Center</h1>
+        </div>
+        <div class="header-right">
+            <button class="theme-toggle" id="theme-toggle" type="button" aria-label="Switch to light theme" title="Switch to light theme">
+                Light
+            </button>
+            <span class="live-badge" id="live-badge">
+                <span class="pulse-dot"></span>
+                <span>Live</span>
+            </span>
+            <span class="countdown" id="countdown">15s</span>
+            <span class="last-updated" id="last-updated"></span>
+        </div>
+    </header>
+
+    <!-- Loading overlay -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="spinner"></div>
+        <p>Connecting to dashboard...</p>
+    </div>
+
+    <!-- Error banner -->
+    <div class="error-banner hidden" id="error-banner">
+        <span id="error-message"></span>
+        <button class="error-close" onclick="document.getElementById('error-banner').classList.add('hidden')">&times;</button>
+    </div>
+
+    <!-- Warning banner -->
+    <div class="warning-banner hidden" id="warning-banner">
+        <span id="warning-message"></span>
+    </div>
+
+    <main class="dashboard-grid">
+        <!-- Date Range Toolbar -->
+        <section class="date-toolbar">
+            <div class="date-inputs">
+                <label class="date-label">From</label>
+                <input type="date" id="date-start" class="date-input" />
+                <label class="date-label">To</label>
+                <input type="date" id="date-end" class="date-input" />
+            </div>
+            <div class="date-presets">
+                <button class="date-preset active" data-preset="today">Today</button>
+                <button class="date-preset" data-preset="7d">7 Days</button>
+                <button class="date-preset" data-preset="30d">30 Days</button>
+                <button class="date-preset" data-preset="all">All</button>
+            </div>
+            <span class="range-label" id="range-label"></span>
+        </section>
+
+        <!-- Summary Cards Row -->
+        <section class="summary-row" id="summary-cards">
+            <div class="card summary-card" data-key="processed_today">
+                <div class="card-label">Processed</div>
+                <div class="card-value" id="card-processed">—</div>
+            </div>
+            <div class="card summary-card" data-key="completions_today">
+                <div class="card-label">Completions</div>
+                <div class="card-value" id="card-completions">—</div>
+            </div>
+            <div class="card summary-card" data-key="active_count">
+                <div class="card-label">Active</div>
+                <div class="card-value" id="card-active">—</div>
+            </div>
+            <div class="card summary-card" data-key="errors_today">
+                <div class="card-label">Errors</div>
+                <div class="card-value" id="card-errors">—</div>
+            </div>
+            <div class="card summary-card" data-key="avg_time">
+                <div class="card-label">Avg Time</div>
+                <div class="card-value" id="card-avg-time">—</div>
+            </div>
+            <div class="card summary-card" data-key="roster_index">
+                <div class="card-label">Roster Index</div>
+                <div class="card-value" id="card-roster">—</div>
+            </div>
+            <div class="card summary-card" data-key="next_staff">
+                <div class="card-label">Next Up</div>
+                <div class="card-value" id="card-next-staff">—</div>
+            </div>
+            <div class="card summary-card" data-key="hib_status">
+                <div class="card-label">HIB Burst</div>
+                <div class="card-value" id="card-hib">—</div>
+                <div class="card-sublabel" id="card-hib-detail"></div>
+            </div>
+        </section>
+
+        <!-- Middle Row: KPI Table + Assignment Pie -->
+        <section class="mid-row">
+            <div class="card panel-large" id="kpi-panel">
+                <h2 class="panel-title">Staff KPI Table</h2>
+                <div class="table-wrap">
+                    <table class="kpi-table" id="kpi-table">
+                        <thead>
+                            <tr>
+                                <th data-sort="name" class="sortable">Staff</th>
+                                <th data-sort="assigned" class="sortable">Assigned</th>
+                                <th data-sort="completed" class="sortable">Completed</th>
+                                <th data-sort="active" class="sortable">Active</th>
+                                <th data-sort="median_min" class="sortable" title="Median completion time across all data">Median Time <span class="tooltip-icon">?</span></th>
+                                <th data-sort="p90_min" class="sortable" title="90th percentile completion time — 90% of tasks complete faster than this">P90 Time <span class="tooltip-icon">?</span></th>
+                            </tr>
+                        </thead>
+                        <tbody id="kpi-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card panel-small">
+                <h2 class="panel-title">Assignment Distribution</h2>
+                <div class="chart-container">
+                    <canvas id="chart-assignment-pie"></canvas>
+                </div>
+            </div>
+        </section>
+
+        <!-- Chart Row: Hourly + Risk/Domain -->
+        <section class="chart-row">
+            <div class="card panel-large">
+                <h2 class="panel-title">Hourly Activity (Today)</h2>
+                <div class="chart-container chart-wide">
+                    <canvas id="chart-hourly"></canvas>
+                </div>
+            </div>
+            <div class="card panel-small chart-stack">
+                <div class="chart-half">
+                    <h2 class="panel-title">Risk Levels</h2>
+                    <div class="chart-container">
+                        <canvas id="chart-risk"></canvas>
+                    </div>
+                </div>
+                <div class="chart-half">
+                    <h2 class="panel-title">Domain Buckets</h2>
+                    <div class="chart-container">
+                        <canvas id="chart-domain"></canvas>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Requestor Row -->
+        <section class="mid-row">
+            <div class="card panel-large">
+                <h2 class="panel-title">Requestor Breakdown (Senders)</h2>
+                <div class="chart-container chart-wide">
+                    <canvas id="chart-requestor"></canvas>
+                </div>
+            </div>
+            <div class="card panel-small">
+                <h2 class="panel-title">Live Insights</h2>
+                <div class="insights-grid">
+                    <div class="insight-item">
+                        <div class="insight-label">Active Tickets</div>
+                        <div class="insight-value" id="insight-active">—</div>
+                    </div>
+                    <div class="insight-item">
+                        <div class="insight-label">Completion Rate</div>
+                        <div class="insight-value" id="insight-completion-rate">—</div>
+                    </div>
+                    <div class="insight-item">
+                        <div class="insight-label">Avg Response</div>
+                        <div class="insight-value" id="insight-avg-response">—</div>
+                    </div>
+                    <div class="insight-item">
+                        <div class="insight-label">Next Assignee</div>
+                        <div class="insight-value" id="insight-next-staff">—</div>
+                    </div>
+                    <div class="insight-item">
+                        <div class="insight-label">Total Processed</div>
+                        <div class="insight-value" id="insight-total">—</div>
+                    </div>
+                    <div class="insight-item">
+                        <div class="insight-label">Roster Position</div>
+                        <div class="insight-value" id="insight-roster">—</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Bottom Row: Activity Feed + Staff Panel -->
+        <section class="bottom-row">
+            <div class="card panel-large">
+                <h2 class="panel-title">Recent Activity <span class="badge" id="feed-count">0</span></h2>
+                <div class="feed-controls">
+                    <label for="staff-filter">Filter by staff:</label>
+                    <select id="staff-filter" class="staff-filter-select">
+                        <option value="">All Staff</option>
+                    </select>
+                    <button id="clear-filter" class="clear-filter-btn" style="display: none;">Clear</button>
+                </div>
+                <div class="feed-wrap" id="activity-feed-wrap">
+                    <table class="feed-table" id="activity-feed-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Type</th>
+                                <th>Subject</th>
+                                <th>Staff</th>
+                                <th>Duration</th>
+                                <th>Risk</th>
+                            </tr>
+                        </thead>
+                        <tbody id="feed-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card panel-small">
+                <h2 class="panel-title">Staff Management</h2>
+                <div class="staff-panel" id="staff-panel">
+                    <div class="staff-add-form">
+                        <input type="email" id="staff-email-input" placeholder="email@example.com" class="staff-input" />
+                        <button id="staff-add-btn" class="btn btn-add">Add</button>
+                    </div>
+                    <div class="staff-add-error hidden" id="staff-add-error"></div>
+                    <ul class="staff-list" id="staff-list"></ul>
+
+                    <div class="settings-section">
+                        <h3 class="settings-title">Manager Emails</h3>
+                        <div class="staff-add-form">
+                            <input type="email" id="manager-email-input" placeholder="manager@sa.gov.au" class="staff-input" />
+                            <button id="manager-add-btn" class="btn btn-add">Add</button>
+                        </div>
+                        <div class="staff-add-error hidden" id="manager-add-error"></div>
+                        <ul class="staff-list" id="manager-list"></ul>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3 class="settings-title">Applications Team</h3>
+                        <div class="staff-add-form">
+                            <input type="email" id="apps-email-input" placeholder="apps@sa.gov.au" class="staff-input" />
+                            <button id="apps-add-btn" class="btn btn-add">Add</button>
+                        </div>
+                        <div class="staff-add-error hidden" id="apps-add-error"></div>
+                        <ul class="staff-list" id="apps-list"></ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- JS Modules -->
+    <script src="/js/api.js"></script>
+    <script src="/js/summary_cards.js"></script>
+    <script src="/js/kpi_table.js"></script>
+    <script src="/js/charts.js"></script>
+    <script src="/js/activity_feed.js"></script>
+    <script src="/js/insights.js"></script>
+    <script src="/js/staff_panel.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>
