@@ -614,7 +614,7 @@ body {
 /* ── Activity Feed ── */
 .feed-wrap {
     overflow-y: auto;
-    max-height: 360px;
+    max-height: 600px;
     padding: 0 16px 16px;
 }
 

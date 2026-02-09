@@ -260,8 +260,8 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
 
     # Resolve date range
     if not date_start and not date_end:
-        # Default: today
-        ds, de = today_str, today_str
+        # Default: all time
+        ds, de = "2000-01-01", "2099-12-31"
     else:
         ds = date_start or "2000-01-01"
         de = date_end or "2099-12-31"
@@ -273,25 +273,23 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     processed = len([e for e in filtered if e["event_type"] == "ASSIGNED"])
     completions = len([e for e in filtered if e["event_type"] == "COMPLETED"])
 
-    # Build active set: assigned keys minus completed keys
+    # Build active set from ALL events (not date-filtered) so we track
+    # truly open tickets regardless of when they were assigned.
     assigned_keys: dict[str, dict] = {}
     completed_keys: set[str] = set()
-    # Also track by assigned_to for jobs without msg_key (legacy/old data)
     assigned_by_staff: dict[str, int] = {}
     completed_by_staff: dict[str, int] = {}
 
-    for e in filtered:
+    for e in events:
         if e["event_type"] == "ASSIGNED":
             if e["msg_key"]:
                 assigned_keys[e["msg_key"]] = e
             elif _is_staff(e["assigned_to"]):
-                # Fallback for old data without msg_key
                 assigned_by_staff[e["assigned_to"]] = assigned_by_staff.get(e["assigned_to"], 0) + 1
         if e["event_type"] == "COMPLETED":
             if e["msg_key"]:
                 completed_keys.add(e["msg_key"])
             elif _is_staff(e["sender"]):
-                # Fallback for old data without msg_key
                 completed_by_staff[e["sender"]] = completed_by_staff.get(e["sender"], 0) + 1
 
     active_items = {k: v for k, v in assigned_keys.items() if k not in completed_keys}
@@ -311,14 +309,35 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     ]
     avg_time_sec = sum(durations) / len(durations) if durations else 0
 
-    # Roster index and next staff member
-    roster_index = None
+    # Uptime: find earliest HEARTBEAT in raw rows for today
+    first_hb = None
+    for r in rows:
+        action_raw = (r.get("Action") or "").strip().upper()
+        risk_raw = (r.get("Risk Level") or "").strip().lower()
+        if action_raw == "HEARTBEAT" or risk_raw == "heartbeat":
+            date_str = (r.get("Date") or "").strip()
+            time_str = (r.get("Time") or "").strip()
+            if date_str and time_str:
+                dt_str = f"{date_str} {time_str}"
+                try:
+                    dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+                    if first_hb is None or dt < first_hb:
+                        first_hb = dt
+                except ValueError:
+                    continue
+
+    uptime_str = None
+    if first_hb:
+        uptime_sec = (now - first_hb).total_seconds()
+        if uptime_sec >= 0:
+            uptime_str = format_duration_human(uptime_sec)
+
+    # Next staff member from roster
     total_processed = None
     next_staff = None
     if roster_state:
-        roster_index = roster_state.get("current_index")
         total_processed = roster_state.get("total_processed")
-        # Calculate next staff member in round-robin
+        roster_index = roster_state.get("current_index")
         if staff_list and roster_index is not None:
             next_idx = roster_index % len(staff_list)
             next_email = staff_list[next_idx]
@@ -334,14 +353,14 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
         "errors_today": errors,
         "avg_time_sec": round(avg_time_sec, 1),
         "avg_time_human": format_duration_human(avg_time_sec) if avg_time_sec else "N/A",
-        "roster_index": roster_index,
+        "uptime": uptime_str,
         "total_processed": total_processed,
         "next_staff": next_staff,
         "hib_burst": hib_burst,
     }
 
-    # ── Per-staff KPIs (filtered range) ──
-    staff_kpis = _compute_staff_kpis(filtered)
+    # ── Per-staff KPIs (filtered range for counts, all events for active) ──
+    staff_kpis = _compute_staff_kpis(filtered, events)
 
     # ── Hourly activity ──
     hourly = _compute_hourly(filtered)
@@ -367,7 +386,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     requestor_dist = _compute_requestor_distribution(filtered)
 
     # ── Recent activity feed (last 50 in range) ──
-    activity_feed = _build_activity_feed(filtered, limit=50)
+    activity_feed = _build_activity_feed(filtered, events, limit=50)
 
     return {
         "summary": summary,
@@ -391,7 +410,7 @@ def _empty_dashboard(now: datetime, roster_state: dict | None, hib_state: dict |
         "summary": {
             "processed_today": 0, "completions_today": 0, "active_count": 0,
             "errors_today": 0, "avg_time_sec": 0, "avg_time_human": "N/A",
-            "roster_index": roster_state.get("current_index") if roster_state else None,
+            "uptime": None,
             "total_processed": roster_state.get("total_processed") if roster_state else None,
             "next_staff": None,
             "hib_burst": hib_burst,
@@ -435,22 +454,23 @@ def _compute_requestor_distribution(events: list[dict], top_n: int = 15) -> dict
     return top
 
 
-def _compute_staff_kpis(events: list[dict]) -> list[dict]:
-    """Per-staff KPI table data."""
-    # Group by staff email
+def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = None) -> list[dict]:
+    """Per-staff KPI table data.
+
+    *filtered* is the date-range subset (for assigned/completed counts).
+    *all_events* is the full dataset (for truly-open active count).
+    If all_events is None, falls back to filtered for backwards compat.
+    """
+    # Group by staff email — counts from filtered range
     staff_assigned: dict[str, int] = defaultdict(int)
     staff_completed: dict[str, int] = defaultdict(int)
     staff_durations: dict[str, list[float]] = defaultdict(list)
-    # Track msg_keys for active count
-    staff_assigned_keys: dict[str, set] = defaultdict(set)
-    staff_completed_keys: dict[str, set] = defaultdict(set)
 
-    for e in events:
+    for e in filtered:
         et = e["event_type"]
         email = e["assigned_to"]
 
         if not _is_staff(email):
-            # For COMPLETED, try sender as fallback
             if et == "COMPLETED" and _is_staff(e["sender"]):
                 email = e["sender"]
             else:
@@ -458,16 +478,31 @@ def _compute_staff_kpis(events: list[dict]) -> list[dict]:
 
         if et == "ASSIGNED":
             staff_assigned[email] += 1
-            if e["msg_key"]:
-                staff_assigned_keys[email].add(e["msg_key"])
         elif et == "COMPLETED":
             staff_completed[email] += 1
-            if e["msg_key"]:
-                staff_completed_keys[email].add(e["msg_key"])
             if e["duration_sec"] is not None and e["duration_sec"] > 0:
                 staff_durations[email].append(e["duration_sec"])
 
-    all_emails = set(staff_assigned) | set(staff_completed)
+    # Track msg_keys for active count from ALL events
+    staff_assigned_keys: dict[str, set] = defaultdict(set)
+    staff_completed_keys: dict[str, set] = defaultdict(set)
+
+    for e in (all_events if all_events is not None else filtered):
+        et = e["event_type"]
+        email = e["assigned_to"]
+
+        if not _is_staff(email):
+            if et == "COMPLETED" and _is_staff(e["sender"]):
+                email = e["sender"]
+            else:
+                continue
+
+        if et == "ASSIGNED" and e["msg_key"]:
+            staff_assigned_keys[email].add(e["msg_key"])
+        elif et == "COMPLETED" and e["msg_key"]:
+            staff_completed_keys[email].add(e["msg_key"])
+
+    all_emails = set(staff_assigned) | set(staff_completed) | set(staff_assigned_keys)
     result = []
     for email in sorted(all_emails):
         assigned = staff_assigned.get(email, 0)
@@ -527,23 +562,35 @@ def _compute_distribution(events: list[dict], field: str,
     return dict(sorted(counts.items(), key=lambda x: -x[1]))
 
 
-def _build_activity_feed(events: list[dict], limit: int = 50) -> list[dict]:
+def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: int = 50) -> list[dict]:
     """Recent activity — most recent first."""
+    # Build lookup: msg_key → staff email from ASSIGNED events (all events, not just filtered)
+    # so COMPLETED rows can show who originally handled the ticket.
+    assigned_staff: dict[str, str] = {}
+    for e in all_events:
+        if e["event_type"] == "ASSIGNED" and _is_staff(e["assigned_to"]) and e["msg_key"]:
+            assigned_staff[e["msg_key"]] = e["assigned_to"]
+
     # Only include events with a timestamp and a meaningful event type
     feed_events = [
-        e for e in events
+        e for e in filtered
         if e["event_ts"] and e["event_type"] in ("ASSIGNED", "COMPLETED")
     ]
     feed_events.sort(key=lambda e: e["event_ts"], reverse=True)
 
     result = []
     for e in feed_events[:limit]:
+        # For COMPLETED events, look up the staff from the original ASSIGNED event
+        staff = e["assigned_to"]
+        if e["event_type"] == "COMPLETED" and not _is_staff(staff) and e["msg_key"]:
+            staff = assigned_staff.get(e["msg_key"], staff)
+
         result.append({
             "time": e["event_ts"].strftime("%H:%M:%S") if e["event_ts"] else "",
             "date": e["date"],
             "type": e["event_type"],
             "subject": e["subject"][:80],
-            "assigned_to": _staff_display_name(e["assigned_to"]) if _is_staff(e["assigned_to"]) else e["assigned_to"],
+            "assigned_to": _staff_display_name(staff) if _is_staff(staff) else staff,
             "duration_human": format_duration_human(e["duration_sec"]) if e["duration_sec"] else "",
             "risk_level": e["risk_level"],
         })

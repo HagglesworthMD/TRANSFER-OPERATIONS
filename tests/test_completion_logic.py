@@ -120,6 +120,17 @@ class CompletionLogicTests(unittest.TestCase):
         )
         self.assertIn('subject=%5BCOMPLETED%5D%20%5BSAMI-', mailto_url)
 
+    def test_mailto_url_contains_footer_with_sami_ref(self):
+        mailto_url = distributor.build_completion_mailto_url(
+            'requester@example.com',
+            distributor.SAMI_SHARED_INBOX,
+            '[COMPLETED] [SAMI-12345] Test Job',
+            body=None,
+        )
+        self.assertIn('body=', mailto_url)
+        self.assertIn('health.samisupportteam%40sa.gov.au', mailto_url)
+        self.assertIn('SAMI-12345', mailto_url)
+        self.assertIn('not%20been%20resolved%20in%20a%20timely%20manner', mailto_url)
 
     def test_staff_completed_confirmation_positive(self):
         staff_set = {'staff@example.com'}

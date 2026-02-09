@@ -90,9 +90,9 @@
                 <div class="card-label">Avg Time</div>
                 <div class="card-value" id="card-avg-time">—</div>
             </div>
-            <div class="card summary-card" data-key="roster_index">
-                <div class="card-label">Roster Index</div>
-                <div class="card-value" id="card-roster">—</div>
+            <div class="card summary-card" data-key="uptime">
+                <div class="card-label">Uptime</div>
+                <div class="card-value" id="card-uptime">—</div>
             </div>
             <div class="card summary-card" data-key="next_staff">
                 <div class="card-label">Next Up</div>
@@ -114,8 +114,8 @@
                         <thead>
                             <tr>
                                 <th data-sort="name" class="sortable">Staff</th>
-                                <th data-sort="assigned" class="sortable">Assigned</th>
-                                <th data-sort="completed" class="sortable">Completed</th>
+                                <th data-sort="assigned" class="sortable" title="Tickets assigned during the selected date range">Assigned <span class="tooltip-icon">?</span></th>
+                                <th data-sort="completed" class="sortable" title="Tickets completed during the selected date range — may include tickets assigned earlier">Completed <span class="tooltip-icon">?</span></th>
                                 <th data-sort="active" class="sortable">Active</th>
                                 <th data-sort="median_min" class="sortable" title="Median completion time across all data">Median Time <span class="tooltip-icon">?</span></th>
                                 <th data-sort="p90_min" class="sortable" title="90th percentile completion time — 90% of tasks complete faster than this">P90 Time <span class="tooltip-icon">?</span></th>
@@ -189,8 +189,8 @@
                         <div class="insight-value" id="insight-total">—</div>
                     </div>
                     <div class="insight-item">
-                        <div class="insight-label">Roster Position</div>
-                        <div class="insight-value" id="insight-roster">—</div>
+                        <div class="insight-label">Uptime</div>
+                        <div class="insight-value" id="insight-uptime">—</div>
                     </div>
                 </div>
             </div>

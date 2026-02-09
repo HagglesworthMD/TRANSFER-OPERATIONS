@@ -157,7 +157,9 @@ const App = {
             // Update range label
             const rangeLabel = document.getElementById('range-label');
             if (rangeLabel && data.date_start && data.date_end) {
-                if (data.date_start === data.date_end) {
+                if (data.date_start === '2000-01-01' && data.date_end === '2099-12-31') {
+                    rangeLabel.textContent = 'All Time';
+                } else if (data.date_start === data.date_end) {
                     rangeLabel.textContent = data.date_start;
                 } else {
                     rangeLabel.textContent = `${data.date_start} to ${data.date_end}`;

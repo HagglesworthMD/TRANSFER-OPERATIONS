@@ -67,6 +67,11 @@ COMPLETION_CC_ADDR = "completion.placeholder@example.invalid"
 SAMI_SHARED_INBOX = "health.samisupportteam@sa.gov.au"
 COMPLETION_SUBJECT_KEYWORD = "[COMPLETED]"
 COMPLETION_SUBJECT_PREFIX = "[COMPLETED] "
+SAMI_SUPPORT_MAILBOX = "health.samisupportteam@sa.gov.au"
+COMPLETION_FOOTER_TEMPLATE = (
+    "If this request has not been resolved in a timely manner, "
+    "please email {mailbox} and quote reference {ref}."
+)
 HEARTBEAT_INTERVAL_SECONDS = 300
 
 # HIB routing and burst detection
@@ -446,6 +451,19 @@ def build_completion_mailto_url(to_email, cc_email, subject, body=None):
     if not subject_value.lstrip().lower().startswith(COMPLETION_SUBJECT_KEYWORD.lower()):
         subject_value = f"{COMPLETION_SUBJECT_PREFIX}{subject_value}".strip()
         log("COMPLETION_SUBJECT_PREFIXED added=1", "INFO")
+    # Extract SAMI reference for completion footer
+    sami_match = re.search(r'\bSAMI-\d+\b', subject_value)
+    sami_ref = sami_match.group(0) if sami_match else "the reference in the subject"
+    # Build completion footer
+    completion_footer = COMPLETION_FOOTER_TEMPLATE.format(
+        mailbox=SAMI_SUPPORT_MAILBOX,
+        ref=sami_ref
+    )
+    # Append footer to body (or create body with footer if none exists)
+    if not body:
+        body = completion_footer
+    else:
+        body = body + "\n\n" + completion_footer
     base_params = []
     if cc_value:
         base_params.append(f"cc={quote(cc_value, safe='@')}")
@@ -1340,8 +1358,8 @@ def get_next_staff():
     
     return person
 
-def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", domain_bucket="", action="", policy_source=""):
-    """Append entry to daily stats CSV (backward compatible with old 6-col schema)"""
+def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", domain_bucket="", action="", policy_source="", event_type="", msg_key="", status_after="", assigned_ts="", completed_ts="", duration_sec=""):
+    """Append entry to daily stats CSV with full 16-column schema"""
     try:
         file_exists = os.path.isfile(FILES["log"])
 
@@ -1360,10 +1378,11 @@ def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", do
         with open(FILES["log"], 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             if not file_exists:
-                # New file: write new 9-column header
+                # New file: write full 16-column header
                 writer.writerow([
                     'Date', 'Time', 'Subject', 'Assigned To', 'Sender', 'Risk Level',
-                    'Domain Bucket', 'Action', 'Policy Source'
+                    'Domain Bucket', 'Action', 'Policy Source', 'event_type', 'msg_key',
+                    'status_after', 'assigned_to', 'assigned_ts', 'completed_ts', 'duration_sec'
                 ])
                 use_old_schema = False
 
@@ -1380,7 +1399,7 @@ def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", do
                     risk_level
                 ])
             else:
-                # New schema: write all 9 fields
+                # Full 16-column schema
                 writer.writerow([
                     now.strftime('%Y-%m-%d'),
                     now.strftime('%H:%M:%S'),
@@ -1390,7 +1409,14 @@ def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", do
                     risk_level,
                     domain_bucket,
                     action,
-                    policy_source
+                    policy_source,
+                    event_type,
+                    msg_key,
+                    status_after,
+                    assigned_to,
+                    assigned_ts,
+                    completed_ts,
+                    duration_sec
                 ])
     except Exception as e:
         log(f"Error writing stats: {e}", "ERROR")
@@ -2334,7 +2360,7 @@ def process_inbox():
                                     processed_ledger[message_key]["internet_message_id"] = identity["internet_message_id"]
                                 if conversation_id:
                                     processed_ledger[message_key]["conversation_id"] = conversation_id
-                                append_stats(subject, "completed", sender_email, "normal", domain_bucket, "STAFF_COMPLETED_CONFIRMATION", policy_source)
+                                append_stats(subject, "completed", sender_email, "normal", domain_bucket, "STAFF_COMPLETED_CONFIRMATION", policy_source, event_type="COMPLETED", msg_key=message_key)
                                 if not save_processed_ledger(processed_ledger):
                                     log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
                                     log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
@@ -2363,9 +2389,9 @@ def process_inbox():
                                 entry["completion_source"] = "reply_all_cc"
                                 entry["completion_subject"] = subject
                                 processed_ledger[match_key] = entry
-                                append_stats(subject, "completed", sender_email, "COMPLETION_MATCHED", domain_bucket, "COMPLETION_MATCHED", policy_source)
+                                append_stats(subject, "completed", sender_email, "COMPLETION_MATCHED", domain_bucket, "COMPLETION_MATCHED", policy_source, event_type="COMPLETED")
                             else:
-                                append_stats(subject, "completed", sender_email, "COMPLETION_UNMATCHED", domain_bucket, "COMPLETION_UNMATCHED", policy_source)
+                                append_stats(subject, "completed", sender_email, "COMPLETION_UNMATCHED", domain_bucket, "COMPLETION_UNMATCHED", policy_source, event_type="COMPLETED")
                             if not save_processed_ledger(processed_ledger):
                                 log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
                                 log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
@@ -2381,7 +2407,7 @@ def process_inbox():
                             continue
                     except Exception as e:
                         log(f"COMPLETION_ERROR {e}", "ERROR")
-                        append_stats(subject, "completed", sender_email, "COMPLETION_ERROR", domain_bucket, "COMPLETION_ERROR", policy_source)
+                        append_stats(subject, "completed", sender_email, "COMPLETION_ERROR", domain_bucket, "COMPLETION_ERROR", policy_source, event_type="COMPLETED")
                         try:
                             msg.UnRead = False
                             _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
@@ -2399,7 +2425,7 @@ def process_inbox():
                     if is_internal_reply(sender_email, subject, staff_list):
                         msg_id = getattr(msg, "EntryID", "") or getattr(msg, "ConversationID", "") or ""
                         log(f"SMART_FILTER_SKIP msg_id={msg_id}", "INFO")
-                        append_stats(subject, "completed", sender_email, "normal", domain_bucket, "SMART_FILTER_COMPLETION", policy_source)
+                        append_stats(subject, "completed", sender_email, "normal", domain_bucket, "SMART_FILTER_COMPLETION", policy_source, event_type="COMPLETED")
                         processed_ledger[message_key] = {
                             "ts": datetime.now().isoformat(),
                             "assigned_to": "completed",
@@ -2606,7 +2632,7 @@ def process_inbox():
 
                     # Handle SAMI completion early
                     if is_completion:
-                        append_stats(subject, "completed", sender_email, "normal", domain_bucket, action_taken, policy_source)
+                        append_stats(subject, "completed", sender_email, "normal", domain_bucket, action_taken, policy_source, event_type="COMPLETED")
                         msg.UnRead = False
                         _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
                         if not _sb_ok:
@@ -2848,7 +2874,12 @@ def process_inbox():
                         log(f"ASSIGNED msg_id={msg_id} risk={risk_level}", "INFO")
 
                     # Archive original (no subject mutation per constraints)
-                    append_stats(subject, assignee, sender_email, risk_level, domain_bucket, action_taken, policy_source)
+                    # Set event_type=ASSIGNED when assignee is staff (contains @ and not system/bot)
+                    _non_staff = {"bot", "completed", "error", "hib", "hold", "manager_review",
+                                  "non_actionable", "quarantined", "skipped", "system_notification"}
+                    a_norm = (assignee or "").strip().lower()
+                    evt_type = "ASSIGNED" if ("@" in a_norm and a_norm not in _non_staff) else ""
+                    append_stats(subject, assignee, sender_email, risk_level, domain_bucket, action_taken, policy_source, event_type=evt_type, msg_key=message_key)
                     msg.UnRead = False
                     _sb_ok2, _sb_actual2 = check_msg_mailbox_store(msg, target_store)
                     if not _sb_ok2:

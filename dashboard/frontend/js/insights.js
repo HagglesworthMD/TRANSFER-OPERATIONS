@@ -30,8 +30,8 @@ const LiveInsights = {
         // Total processed (lifetime)
         this._set('insight-total', summary.total_processed || '—');
 
-        // Roster position
-        this._set('insight-roster', summary.roster_index != null ? summary.roster_index : '—');
+        // Uptime
+        this._set('insight-uptime', summary.uptime || '—');
     },
 
     _set(id, value) {

@@ -10,8 +10,8 @@ const SummaryCards = {
         this._set('card-active', summary.active_count);
         this._set('card-errors', summary.errors_today);
         this._set('card-avg-time', summary.avg_time_human || 'N/A');
-        this._set('card-roster',
-            summary.roster_index != null ? summary.roster_index : '—'
+        this._set('card-uptime',
+            summary.uptime || '—'
         );
         this._set('card-next-staff',
             summary.next_staff || '—'
