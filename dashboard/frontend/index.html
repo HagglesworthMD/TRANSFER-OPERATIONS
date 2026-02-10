@@ -166,31 +166,23 @@
                 </div>
             </div>
             <div class="card panel-small">
-                <h2 class="panel-title">Live Insights</h2>
+                <h2 class="panel-title" id="insight-panel-title">Next Up: —</h2>
                 <div class="insights-grid">
                     <div class="insight-item">
                         <div class="insight-label">Active Tickets</div>
                         <div class="insight-value" id="insight-active">—</div>
                     </div>
                     <div class="insight-item">
-                        <div class="insight-label">Completion Rate</div>
-                        <div class="insight-value" id="insight-completion-rate">—</div>
+                        <div class="insight-label">Assigned</div>
+                        <div class="insight-value" id="insight-assigned">—</div>
                     </div>
                     <div class="insight-item">
-                        <div class="insight-label">Avg Response</div>
-                        <div class="insight-value" id="insight-avg-response">—</div>
+                        <div class="insight-label">Completed</div>
+                        <div class="insight-value" id="insight-completed">—</div>
                     </div>
                     <div class="insight-item">
-                        <div class="insight-label">Next Assignee</div>
-                        <div class="insight-value" id="insight-next-staff">—</div>
-                    </div>
-                    <div class="insight-item">
-                        <div class="insight-label">Total Processed</div>
-                        <div class="insight-value" id="insight-total">—</div>
-                    </div>
-                    <div class="insight-item">
-                        <div class="insight-label">Uptime</div>
-                        <div class="insight-value" id="insight-uptime">—</div>
+                        <div class="insight-label">Median Response</div>
+                        <div class="insight-value" id="insight-median">—</div>
                     </div>
                 </div>
             </div>
@@ -211,12 +203,12 @@
                     <table class="feed-table" id="activity-feed-table">
                         <thead>
                             <tr>
-                                <th>Time</th>
-                                <th>Type</th>
+                                <th class="sortable" data-sort="time">Time</th>
+                                <th class="sortable" data-sort="type">Type</th>
                                 <th>Subject</th>
-                                <th>Staff</th>
-                                <th>Duration</th>
-                                <th>Risk</th>
+                                <th class="sortable" data-sort="assigned_to">Staff</th>
+                                <th class="sortable" data-sort="duration_sec">Duration</th>
+                                <th class="sortable" data-sort="risk_level">Risk</th>
                             </tr>
                         </thead>
                         <tbody id="feed-tbody"></tbody>
@@ -224,23 +216,62 @@
                 </div>
             </div>
             <div class="card panel-small">
-                <h2 class="panel-title">Staff Management</h2>
+                <h2 class="panel-title">Domain Policy & Staff</h2>
                 <div class="staff-panel" id="staff-panel">
+                    <h3 class="settings-title">Transfer Domains <span class="tooltip-icon" title="Emails from these domains are treated as imaging transfer requests and assigned to staff via round-robin. Add the sender's domain (e.g. jonesradiology.com.au) to have their requests automatically distributed.">?</span></h3>
                     <div class="staff-add-form">
-                        <input type="email" id="staff-email-input" placeholder="email@example.com" class="staff-input" />
-                        <button id="staff-add-btn" class="btn btn-add">Add</button>
+                        <input type="text" id="domain-external_image_request-input" placeholder="example.com" class="staff-input" />
+                        <button id="domain-external_image_request-add-btn" class="btn btn-add">Add</button>
                     </div>
-                    <div class="staff-add-error hidden" id="staff-add-error"></div>
-                    <ul class="staff-list" id="staff-list"></ul>
+                    <div class="staff-add-error hidden" id="domain-external_image_request-error"></div>
+                    <ul class="staff-list" id="domain-external_image_request-list"></ul>
 
                     <div class="settings-section">
-                        <h3 class="settings-title">Manager Emails</h3>
+                        <h3 class="settings-title">System Notifications <span class="tooltip-icon" title="Emails from these domains bypass staff assignment and are moved directly to 05_SYSTEM_NOTIFICATIONS with a CC to manager and apps team.">?</span></h3>
+                        <div class="staff-add-form">
+                            <input type="text" id="domain-system_notification-input" placeholder="example.com" class="staff-input" />
+                            <button id="domain-system_notification-add-btn" class="btn btn-add">Add</button>
+                        </div>
+                        <div class="staff-add-error hidden" id="domain-system_notification-error"></div>
+                        <ul class="staff-list" id="domain-system_notification-list"></ul>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3 class="settings-title">Manager Oversight <span class="tooltip-icon" title="Manager email recipients and domains that always require manager review. Unknown domains are already forwarded automatically — these are explicitly flagged every time.">?</span></h3>
+                        <p class="settings-desc">Recipients</p>
                         <div class="staff-add-form">
                             <input type="email" id="manager-email-input" placeholder="manager@sa.gov.au" class="staff-input" />
                             <button id="manager-add-btn" class="btn btn-add">Add</button>
                         </div>
                         <div class="staff-add-error hidden" id="manager-add-error"></div>
                         <ul class="staff-list" id="manager-list"></ul>
+                        <p class="settings-desc" style="margin-top: 16px;">Held domains</p>
+                        <div class="staff-add-form">
+                            <input type="text" id="domain-always_hold-input" placeholder="example.com" class="staff-input" />
+                            <button id="domain-always_hold-add-btn" class="btn btn-add">Add</button>
+                        </div>
+                        <div class="staff-add-error hidden" id="domain-always_hold-error"></div>
+                        <ul class="staff-list" id="domain-always_hold-list"></ul>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3 class="settings-title">Quarantine <span class="tooltip-icon" title="Emails from these domains are automatically moved to 03_QUARANTINE with no further action. Use this for spam, junk, or irrelevant automated emails.">?</span></h3>
+                        <div class="staff-add-form">
+                            <input type="text" id="domain-quarantine-input" placeholder="example.com" class="staff-input" />
+                            <button id="domain-quarantine-add-btn" class="btn btn-add">Add</button>
+                        </div>
+                        <div class="staff-add-error hidden" id="domain-quarantine-error"></div>
+                        <ul class="staff-list" id="domain-quarantine-list"></ul>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3 class="settings-title">Staff Round-Robin</h3>
+                        <div class="staff-add-form">
+                            <input type="email" id="staff-email-input" placeholder="email@example.com" class="staff-input" />
+                            <button id="staff-add-btn" class="btn btn-add">Add</button>
+                        </div>
+                        <div class="staff-add-error hidden" id="staff-add-error"></div>
+                        <ul class="staff-list" id="staff-list"></ul>
                     </div>
 
                     <div class="settings-section">

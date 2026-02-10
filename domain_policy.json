@@ -23,7 +23,8 @@
     "imagingsol.com.au",
     "its.jnj.com",
     "everlightradiology.com",
-    "philips.com"
+    "philips.com",
+    "insidestategovernment.com.au"
   ],
   "sami_support_staff": [
     "christina.carroll@sa.gov.au",
@@ -45,6 +46,7 @@
   ],
   "manager_email": "Jason.quinn2@sa.gov.au",
   "always_hold_domains": [],
+  "quarantine_domains": [],
   "hib_noise": {
     "sender_equals": "image.health@sa.gov.au",
     "subject_contains_all": [

@@ -100,4 +100,30 @@ const DashboardAPI = {
         if (!res.ok) throw new Error(data.detail || 'Failed to remove apps team member');
         return data;
     },
+
+    async getDomains(bucket) {
+        const res = await fetch(`${this.base}/api/domains/${encodeURIComponent(bucket)}`);
+        if (!res.ok) throw new Error(`Domains API: ${res.status}`);
+        return res.json();
+    },
+
+    async addDomain(bucket, domain) {
+        const res = await fetch(`${this.base}/api/domains/${encodeURIComponent(bucket)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ domain }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to add domain');
+        return data;
+    },
+
+    async removeDomain(bucket, domain) {
+        const res = await fetch(`${this.base}/api/domains/${encodeURIComponent(bucket)}/${encodeURIComponent(domain)}`, {
+            method: 'DELETE',
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to remove domain');
+        return data;
+    },
 };

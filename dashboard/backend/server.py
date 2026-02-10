@@ -1,5 +1,6 @@
 """FastAPI app — all endpoints + static file serving."""
 
+import json
 import logging
 import sys
 from pathlib import Path
@@ -141,6 +142,90 @@ async def delete_apps(email: str):
     return {"message": msg, "apps": read_staff(config.APPS_TXT)}
 
 
+# ── Domain policy endpoints ──
+
+_DOMAIN_BUCKETS = {
+    "external_image_request": "external_image_request_domains",
+    "system_notification": "system_notification_domains",
+    "always_hold": "always_hold_domains",
+    "quarantine": "quarantine_domains",
+}
+
+
+class DomainRequest(BaseModel):
+    domain: str
+
+
+def _read_domain_policy() -> dict:
+    """Read domain_policy.json directly (bypass mtime cache for writes)."""
+    try:
+        with open(config.DOMAIN_POLICY_JSON, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_domain_policy(data: dict) -> None:
+    """Write domain_policy.json atomically."""
+    tmp_path = config.DOMAIN_POLICY_JSON.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    tmp_path.replace(config.DOMAIN_POLICY_JSON)
+
+
+def _validate_bucket(bucket: str) -> str:
+    """Return the JSON key for the bucket, or raise 404."""
+    key = _DOMAIN_BUCKETS.get(bucket)
+    if not key:
+        raise HTTPException(status_code=404, detail=f"Unknown bucket: {bucket}")
+    return key
+
+
+def _validate_domain(domain: str) -> str:
+    """Normalise and validate a domain string."""
+    domain = domain.strip().lower()
+    if not domain or "." not in domain:
+        raise HTTPException(status_code=400, detail="Domain must contain at least one dot")
+    return domain
+
+
+@app.get("/api/domains/{bucket}")
+async def get_domains(bucket: str):
+    key = _validate_bucket(bucket)
+    policy = _read_domain_policy()
+    return {"domains": policy.get(key, [])}
+
+
+@app.post("/api/domains/{bucket}")
+async def add_domain(bucket: str, body: DomainRequest):
+    key = _validate_bucket(bucket)
+    domain = _validate_domain(body.domain)
+    policy = _read_domain_policy()
+    domains = policy.get(key, [])
+    if domain in domains:
+        raise HTTPException(status_code=400, detail=f"{domain} already in {bucket}")
+    domains.append(domain)
+    policy[key] = domains
+    _write_domain_policy(policy)
+    logger.info("Added domain %s to %s", domain, bucket)
+    return {"domains": domains}
+
+
+@app.delete("/api/domains/{bucket}/{domain:path}")
+async def remove_domain(bucket: str, domain: str):
+    key = _validate_bucket(bucket)
+    domain = domain.strip().lower()
+    policy = _read_domain_policy()
+    domains = policy.get(key, [])
+    if domain not in domains:
+        raise HTTPException(status_code=404, detail=f"{domain} not found in {bucket}")
+    domains.remove(domain)
+    policy[key] = domains
+    _write_domain_policy(policy)
+    logger.info("Removed domain %s from %s", domain, bucket)
+    return {"domains": domains}
+
+
 @app.get("/api/health")
 async def health():
     return {
@@ -167,9 +252,6 @@ class SettingUpdate(BaseModel):
 
 @app.post("/api/settings")
 async def update_setting(body: SettingUpdate):
-    import json
-    from pathlib import Path
-
     # Validate key
     if body.key not in ["manager_cc_addr", "apps_cc_addr"]:
         raise HTTPException(status_code=400, detail="Invalid setting key")

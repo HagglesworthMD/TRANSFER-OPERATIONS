@@ -3,6 +3,8 @@
 const StaffPanel = {
     _emailRegex: /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/,
 
+    _domainBuckets: ['external_image_request', 'system_notification', 'always_hold', 'quarantine'],
+
     init() {
         const btn = document.getElementById('staff-add-btn');
         const input = document.getElementById('staff-email-input');
@@ -33,9 +35,24 @@ const StaffPanel = {
             });
         }
 
+        // Initialize domain bucket buttons
+        for (const bucket of this._domainBuckets) {
+            const domBtn = document.getElementById(`domain-${bucket}-add-btn`);
+            const domInput = document.getElementById(`domain-${bucket}-input`);
+            if (domBtn) domBtn.addEventListener('click', () => this._addDomain(bucket));
+            if (domInput) {
+                domInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') this._addDomain(bucket);
+                });
+            }
+        }
+
         this.loadStaff();
         this.loadManagers();
         this.loadApps();
+        for (const bucket of this._domainBuckets) {
+            this.loadDomains(bucket);
+        }
     },
 
     async loadStaff() {
@@ -254,6 +271,84 @@ const StaffPanel = {
 
     _hideAppsError() {
         const el = document.getElementById('apps-add-error');
+        if (el) el.classList.add('hidden');
+    },
+
+    // ── Domain management (generic across buckets) ──
+
+    async loadDomains(bucket) {
+        const listId = `domain-${bucket}-list`;
+        try {
+            const data = await DashboardAPI.getDomains(bucket);
+            this._renderDomainList(bucket, listId, data.domains || []);
+        } catch (err) {
+            console.error(`Failed to load domains for ${bucket}:`, err);
+        }
+    },
+
+    _renderDomainList(bucket, listId, domains) {
+        const ul = document.getElementById(listId);
+        if (!ul) return;
+
+        ul.innerHTML = domains.map(domain => {
+            return `<li>
+                <span class="staff-email">${this._esc(domain)}</span>
+                <button class="btn btn-remove" data-domain="${this._esc(domain)}">Remove</button>
+            </li>`;
+        }).join('');
+
+        ul.querySelectorAll('.btn-remove').forEach(btn => {
+            btn.addEventListener('click', () => this._removeDomain(bucket, btn.dataset.domain));
+        });
+    },
+
+    async _addDomain(bucket) {
+        const inputId = `domain-${bucket}-input`;
+        const errorId = `domain-${bucket}-error`;
+        const listId = `domain-${bucket}-list`;
+        const input = document.getElementById(inputId);
+        if (!input) return;
+
+        const domain = input.value.trim().toLowerCase();
+        if (!domain) return;
+
+        if (!domain.includes('.')) {
+            this._showDomainError(errorId, 'Domain must contain at least one dot');
+            return;
+        }
+
+        try {
+            const data = await DashboardAPI.addDomain(bucket, domain);
+            this._renderDomainList(bucket, listId, data.domains || []);
+            input.value = '';
+            this._hideDomainError(errorId);
+        } catch (err) {
+            this._showDomainError(errorId, err.message);
+        }
+    },
+
+    async _removeDomain(bucket, domain) {
+        const errorId = `domain-${bucket}-error`;
+        const listId = `domain-${bucket}-list`;
+        try {
+            const data = await DashboardAPI.removeDomain(bucket, domain);
+            this._renderDomainList(bucket, listId, data.domains || []);
+            this._hideDomainError(errorId);
+        } catch (err) {
+            this._showDomainError(errorId, err.message);
+        }
+    },
+
+    _showDomainError(errorId, msg) {
+        const el = document.getElementById(errorId);
+        if (el) {
+            el.textContent = msg;
+            el.classList.remove('hidden');
+        }
+    },
+
+    _hideDomainError(errorId) {
+        const el = document.getElementById(errorId);
         if (el) el.classList.add('hidden');
     },
 };

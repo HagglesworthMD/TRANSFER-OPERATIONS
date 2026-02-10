@@ -13,6 +13,7 @@ APPS_TXT = BASE_DIR / "apps.txt"
 ROSTER_STATE_JSON = BASE_DIR / "roster_state.json"
 SETTINGS_OVERRIDES_JSON = BASE_DIR / "settings_overrides.json"
 HIB_WATCHDOG_JSON = BASE_DIR / "hib_watchdog.json"
+DOMAIN_POLICY_JSON = BASE_DIR / "domain_policy.json"
 
 # ── Server ──
 HOST = "0.0.0.0"

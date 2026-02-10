@@ -515,12 +515,15 @@ body {
     position: relative;
 }
 
-.kpi-table thead th.sortable:hover {
+.kpi-table thead th.sortable:hover,
+.feed-table thead th.sortable:hover {
     color: var(--text-primary);
 }
 
-.kpi-table thead th.sort-asc::after { content: " \u25B2"; font-size: 0.65rem; }
-.kpi-table thead th.sort-desc::after { content: " \u25BC"; font-size: 0.65rem; }
+.kpi-table thead th.sort-asc::after,
+.feed-table thead th.sort-asc::after { content: " \u25B2"; font-size: 0.65rem; }
+.kpi-table thead th.sort-desc::after,
+.feed-table thead th.sort-desc::after { content: " \u25BC"; font-size: 0.65rem; }
 
 .tooltip-icon {
     display: inline-flex;
@@ -616,6 +619,16 @@ body {
     overflow-y: auto;
     max-height: 600px;
     padding: 0 16px 16px;
+}
+
+.bottom-row .panel-large {
+    display: flex;
+    flex-direction: column;
+}
+
+.bottom-row .panel-large .feed-wrap {
+    flex: 1;
+    max-height: none;
 }
 
 .feed-table {
@@ -1032,6 +1045,12 @@ body {
     margin-bottom: 16px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+}
+
+.settings-desc {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin: -8px 0 12px;
 }
 
 .setting-item {
