@@ -9,6 +9,7 @@ const DashboardAPI = {
             const qs = new URLSearchParams();
             if (params.dateStart) qs.set('date_start', params.dateStart);
             if (params.dateEnd) qs.set('date_end', params.dateEnd);
+            if (params.staff) qs.set('staff', params.staff);
             const s = qs.toString();
             if (s) url += '?' + s;
         }

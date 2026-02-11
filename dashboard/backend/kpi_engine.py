@@ -292,7 +292,8 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
                       settings: dict | None, staff_list: list[str] | None = None,
                       hib_state: dict | None = None,
                       date_start: str | None = None,
-                      date_end: str | None = None) -> dict[str, Any]:
+                      date_end: str | None = None,
+                      staff_filter: str | None = None) -> dict[str, Any]:
     """Compute the full unified dashboard payload.
 
     date_start/date_end: optional YYYY-MM-DD strings to filter events.
@@ -427,7 +428,8 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     requestor_dist = _compute_requestor_distribution(filtered)
 
     # ── Recent activity feed (last 50 in range) ──
-    activity_feed = _build_activity_feed(filtered, events, limit=50)
+    activity_feed = _build_activity_feed(filtered, events, limit=50,
+                                         staff_filter=staff_filter)
 
     return {
         "summary": summary,
@@ -705,7 +707,8 @@ def _compute_distribution(events: list[dict], field: str,
     return dict(sorted(counts.items(), key=lambda x: -x[1]))
 
 
-def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: int = 50) -> list[dict]:
+def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: int = 50,
+                         staff_filter: str | None = None) -> list[dict]:
     """Recent activity — most recent first."""
     # Build lookup: msg_key → staff email from ASSIGNED events (all events, not just filtered)
     # so COMPLETED rows can show who originally handled the ticket.
@@ -714,6 +717,84 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
         if e["event_type"] == "ASSIGNED" and _is_staff(e["assigned_to"]) and e["msg_key"]:
             assigned_staff[e["msg_key"]] = e["assigned_to"]
 
+    # ------------------------------------------------------------------
+    # Duration inference for COMPLETED events (mirrors _compute_staff_kpis logic)
+    # ------------------------------------------------------------------
+
+    def _resolve_ts(e: dict, kind: str) -> datetime | None:
+        """Best available timestamp for an event."""
+        if kind == "assigned":
+            ts = e.get("assigned_ts") or e.get("event_ts")
+        else:
+            ts = e.get("completed_ts") or e.get("event_ts")
+        if ts:
+            return ts
+        date_raw = e.get("date") or e.get("Date")
+        time_raw = e.get("time") or e.get("Time")
+        date_str = date_raw.strip() if isinstance(date_raw, str) else ""
+        time_str = time_raw.strip() if isinstance(time_raw, str) else ""
+        if not date_str or not time_str:
+            return None
+        return _parse_ts(f"{date_str}T{time_str}") or _parse_ts(f"{date_str} {time_str}")
+
+    def _resolve_email(e: dict) -> str | None:
+        email = (e.get("assigned_to") or "").strip().lower()
+        if _is_staff(email):
+            return email
+        if e["event_type"] == "COMPLETED":
+            sender = (e.get("sender") or e.get("Sender") or "").strip().lower()
+            if _is_staff(sender):
+                return sender
+        return None
+
+    # 1. msg_key → earliest ASSIGNED event_ts
+    earliest_assigned_ts: dict[str, datetime] = {}
+    for e in all_events:
+        if e["event_type"] != "ASSIGNED":
+            continue
+        key = e.get("msg_key") or ""
+        if not key:
+            continue
+        ts = _resolve_ts(e, "assigned")
+        if not ts:
+            continue
+        prev = earliest_assigned_ts.get(key)
+        if prev is None or ts < prev:
+            earliest_assigned_ts[key] = ts
+
+    # 2. Per-staff FIFO queues of ASSIGNED timestamps
+    staff_queues: dict[str, list[datetime]] = defaultdict(list)
+    for e in all_events:
+        if e["event_type"] != "ASSIGNED":
+            continue
+        email = _resolve_email(e)
+        if not email:
+            continue
+        ts = _resolve_ts(e, "assigned")
+        if ts:
+            staff_queues[email].append(ts)
+    for q in staff_queues.values():
+        q.sort()
+
+    # Pre-consume FIFO queue with COMPLETED events that precede the filtered set,
+    # so that today's completions don't match stale assignments.
+    filtered_set = set(id(e) for e in filtered)
+    for e in all_events:
+        if e["event_type"] != "COMPLETED" or id(e) in filtered_set:
+            continue
+        email = _resolve_email(e)
+        if not email:
+            continue
+        key = e.get("msg_key") or ""
+        if key and earliest_assigned_ts.get(key):
+            continue
+        completed_ts = _resolve_ts(e, "completed")
+        if completed_ts and staff_queues.get(email):
+            if staff_queues[email][0] < completed_ts:
+                staff_queues[email].pop(0)
+
+    # ------------------------------------------------------------------
+
     # Only include events with a timestamp and a meaningful event type
     feed_events = [
         e for e in filtered
@@ -721,12 +802,54 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
     ]
     feed_events.sort(key=lambda e: e["event_ts"], reverse=True)
 
+    # Resolve display name for each event up-front so staff filtering works
+    def _display_staff(e: dict) -> str:
+        staff = e["assigned_to"]
+        if e["event_type"] == "COMPLETED" and not _is_staff(staff):
+            # Try msg_key lookup first
+            if e["msg_key"]:
+                staff = assigned_staff.get(e["msg_key"], staff)
+            # Fall back to sender field (COMPLETED rows often have
+            # the staff email as sender rather than assigned_to)
+            if not _is_staff(staff):
+                sender = (e.get("sender") or e.get("Sender") or "").strip().lower()
+                if _is_staff(sender):
+                    staff = sender
+        return staff
+
+    # When a staff filter is active, keep only that person's events before
+    # applying the limit so the user sees all their recent jobs.
+    if staff_filter:
+        sf_lower = staff_filter.strip().lower()
+        feed_events = [
+            e for e in feed_events
+            if _staff_display_name(_display_staff(e)).lower() == sf_lower
+            or _display_staff(e).lower() == sf_lower
+        ]
+
     result = []
     for e in feed_events[:limit]:
-        # For COMPLETED events, look up the staff from the original ASSIGNED event
-        staff = e["assigned_to"]
-        if e["event_type"] == "COMPLETED" and not _is_staff(staff) and e["msg_key"]:
-            staff = assigned_staff.get(e["msg_key"], staff)
+        staff = _display_staff(e)
+
+        # Infer duration for COMPLETED events
+        dur_sec = e["duration_sec"]
+        if e["event_type"] == "COMPLETED" and not dur_sec:
+            completed_ts = _resolve_ts(e, "completed")
+            key = e.get("msg_key") or ""
+            assigned_ts = earliest_assigned_ts.get(key) if key else None
+            email = _resolve_email(e)
+            if assigned_ts and completed_ts:
+                dur_sec = _business_seconds(assigned_ts, completed_ts)
+            elif completed_ts and email and staff_queues.get(email):
+                while staff_queues[email]:
+                    a_ts = staff_queues[email][0]
+                    if a_ts >= completed_ts:
+                        break
+                    staff_queues[email].pop(0)
+                    delta = _business_seconds(a_ts, completed_ts)
+                    if delta > 0:
+                        dur_sec = delta
+                        break
 
         result.append({
             "time": e["event_ts"].strftime("%H:%M:%S") if e["event_ts"] else "",
@@ -734,7 +857,8 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
             "type": e["event_type"],
             "subject": e["subject"][:80],
             "assigned_to": _staff_display_name(staff) if _is_staff(staff) else staff,
-            "duration_human": format_duration_human(e["duration_sec"]) if e["duration_sec"] else "",
+            "duration_human": format_duration_human(dur_sec) if dur_sec else "",
+            "duration_sec": dur_sec if dur_sec else None,
             "risk_level": e["risk_level"],
         })
     return result

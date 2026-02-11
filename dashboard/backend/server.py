@@ -414,12 +414,14 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ── Endpoints ──
 
 @app.get("/api/dashboard")
-async def dashboard_endpoint(date_start: str | None = None, date_end: str | None = None):
+async def dashboard_endpoint(date_start: str | None = None, date_end: str | None = None,
+                             staff: str | None = None):
     """Unified dashboard data — single call for all read-only data.
 
     Query params:
         date_start: YYYY-MM-DD (optional, defaults to today)
         date_end:   YYYY-MM-DD (optional, defaults to today)
+        staff:      display name to filter activity feed (optional)
     """
     rows, csv_err = load_csv(config.DAILY_STATS_CSV)
     roster, _ = load_json(config.ROSTER_STATE_JSON)
@@ -435,7 +437,8 @@ async def dashboard_endpoint(date_start: str | None = None, date_end: str | None
         staff_list = staff_list or []
 
     payload = compute_dashboard(rows, roster, settings, staff_list, hib_state,
-                                date_start=date_start, date_end=date_end)
+                                date_start=date_start, date_end=date_end,
+                                staff_filter=staff)
     if csv_err:
         payload["warning"] = csv_err
     return payload

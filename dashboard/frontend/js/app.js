@@ -134,9 +134,11 @@ const App = {
     _getDateParams() {
         const startInput = document.getElementById('date-start');
         const endInput = document.getElementById('date-end');
+        const staffFilter = document.getElementById('staff-filter');
         const params = {};
         if (startInput && startInput.value) params.dateStart = startInput.value;
         if (endInput && endInput.value) params.dateEnd = endInput.value;
+        if (staffFilter && staffFilter.value) params.staff = staffFilter.value;
         return Object.keys(params).length > 0 ? params : null;
     },
 
