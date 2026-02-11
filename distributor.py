@@ -63,6 +63,12 @@ LOCK_PATH = "bot.lock"
 SETTINGS_OVERRIDES_PATH = "settings_overrides.json"
 DOMAIN_POLICY_PATH = "domain_policy.json"
 STAFF_PATH = os.path.join(os.path.dirname(__file__), "staff.txt")
+STAFF_JSON_PATH = os.path.join(os.path.dirname(__file__), "staff.json")
+APPS_TEAM_JSON_PATH = os.path.join(os.path.dirname(__file__), "apps_team.json")
+MANAGER_CONFIG_JSON_PATH = os.path.join(os.path.dirname(__file__), "manager_config.json")
+SYSTEM_BUCKETS_JSON_PATH = os.path.join(os.path.dirname(__file__), "system_buckets.json")
+MANAGERS_TXT_PATH = os.path.join(os.path.dirname(__file__), "managers.txt")
+APPS_TXT_PATH = os.path.join(os.path.dirname(__file__), "apps.txt")
 COMPLETION_CC_ADDR = "completion.placeholder@example.invalid"
 SAMI_SHARED_INBOX = "health.samisupportteam@sa.gov.au"
 COMPLETION_SUBJECT_KEYWORD = "[COMPLETED]"
@@ -84,6 +90,14 @@ _staff_list_cache = None
 _safe_mode_cache = None
 _safe_mode_inbox = None
 _live_test_override = False
+
+# Hot-reloaded dashboard-managed config (last-known-good per file).
+_hot_config_state = {
+    "staff": {"seen_fp": None, "seen_sha": None, "lkg": None, "lkg_sha": None},
+    "apps_team": {"seen_fp": None, "seen_sha": None, "lkg": None, "lkg_sha": None},
+    "manager_config": {"seen_fp": None, "seen_sha": None, "lkg": None, "lkg_sha": None},
+    "system_buckets": {"seen_fp": None, "seen_sha": None, "lkg": None, "lkg_sha": None},
+}
 
 def is_valid_completion_cc(value):
     if not isinstance(value, str):
@@ -780,6 +794,327 @@ def atomic_write_json(path, data, *, state_name=""):
         log(f"STATE_WRITE_FAIL state={state_name} path={path} error={e}", "ERROR")
         return False
 
+def normalize_email(raw):
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip().lower()
+    if not s:
+        return None
+    if any(ch.isspace() for ch in s):
+        return None
+    if s.count("@") != 1:
+        return None
+    local, domain = s.split("@", 1)
+    if not local or not domain:
+        return None
+    if "." not in domain:
+        return None
+    return s
+
+def normalize_domain(raw):
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip().lower()
+    if not s:
+        return None
+    if s.startswith("@"):
+        s = s[1:]
+    if s.startswith("http://"):
+        s = s[len("http://"):]
+    elif s.startswith("https://"):
+        s = s[len("https://"):]
+    s = s.strip().rstrip("/")
+    if not s:
+        return None
+    if any(ch.isspace() for ch in s):
+        return None
+    if "/" in s or "\\" in s:
+        return None
+    if "@" in s:
+        return None
+    if ":" in s:
+        return None
+    if "." not in s:
+        return None
+    if s.startswith(".") or s.endswith(".") or ".." in s:
+        return None
+    for ch in s:
+        if ch.isalnum() or ch in ".-":
+            continue
+        return None
+    return s
+
+def _dedupe_preserve_order(items):
+    seen = set()
+    out = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return out
+
+def _file_fingerprint(path):
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    mtime_ns = getattr(st, "st_mtime_ns", None)
+    if mtime_ns is None:
+        mtime_ns = int(st.st_mtime * 1_000_000_000)
+    return (mtime_ns, st.st_size)
+
+def _parse_staff_json(obj):
+    if not isinstance(obj, dict):
+        return None, "staff.json must be a JSON object"
+    for key in ("staff", "off_rotation", "leave"):
+        if key not in obj:
+            return None, f"staff.json missing key: {key}"
+        if not isinstance(obj.get(key), list):
+            return None, f"staff.json key not a list: {key}"
+    staff = []
+    for item in obj.get("staff", []):
+        email = normalize_email(item)
+        if not email:
+            return None, "staff.json contains invalid email in staff"
+        staff.append(email)
+    off_rotation = []
+    for item in obj.get("off_rotation", []):
+        email = normalize_email(item)
+        if not email:
+            return None, "staff.json contains invalid email in off_rotation"
+        off_rotation.append(email)
+    leave = []
+    for item in obj.get("leave", []):
+        email = normalize_email(item)
+        if not email:
+            return None, "staff.json contains invalid email in leave"
+        leave.append(email)
+    return {
+        "staff": _dedupe_preserve_order(staff),
+        "off_rotation": _dedupe_preserve_order(off_rotation),
+        "leave": _dedupe_preserve_order(leave),
+    }, None
+
+def _parse_recipients_json(obj, name="recipients"):
+    if not isinstance(obj, dict):
+        return None, f"{name}.json must be a JSON object"
+    if "recipients" not in obj:
+        return None, f"{name}.json missing key: recipients"
+    if not isinstance(obj.get("recipients"), list):
+        return None, f"{name}.json key not a list: recipients"
+    recipients = []
+    for item in obj.get("recipients", []):
+        email = normalize_email(item)
+        if not email:
+            return None, f"{name}.json contains invalid email in recipients"
+        recipients.append(email)
+    return {"recipients": _dedupe_preserve_order(recipients)}, None
+
+def _parse_system_buckets_json(obj):
+    if not isinstance(obj, dict):
+        return None, "system_buckets.json must be a JSON object"
+    required_list_keys = (
+        "transfer_domains",
+        "system_notification_domains",
+        "quarantine_domains",
+        "held_domains",
+    )
+    for key in required_list_keys:
+        if key not in obj:
+            return None, f"system_buckets.json missing key: {key}"
+        if not isinstance(obj.get(key), list):
+            return None, f"system_buckets.json key not a list: {key}"
+    if "folders" not in obj:
+        return None, "system_buckets.json missing key: folders"
+    if not isinstance(obj.get("folders"), dict):
+        return None, "system_buckets.json key not an object: folders"
+
+    def _parse_domains(key):
+        domains = []
+        for item in obj.get(key, []):
+            dom = normalize_domain(item)
+            if not dom:
+                return None, f"system_buckets.json contains invalid domain in {key}"
+            domains.append(dom)
+        return _dedupe_preserve_order(domains), None
+
+    transfer_domains, err = _parse_domains("transfer_domains")
+    if err:
+        return None, err
+    system_notification_domains, err = _parse_domains("system_notification_domains")
+    if err:
+        return None, err
+    quarantine_domains, err = _parse_domains("quarantine_domains")
+    if err:
+        return None, err
+    held_domains, err = _parse_domains("held_domains")
+    if err:
+        return None, err
+
+    folders_in = obj.get("folders", {})
+    allowed_folder_keys = {
+        "completed",
+        "non_actionable",
+        "quarantine",
+        "hold",
+        "system_notification",
+    }
+    folders = {}
+    for key, value in folders_in.items():
+        if key not in allowed_folder_keys:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            return None, f"system_buckets.json invalid folder name for {key}"
+        folders[key] = value.strip()
+
+    return {
+        "transfer_domains": transfer_domains,
+        "system_notification_domains": system_notification_domains,
+        "quarantine_domains": quarantine_domains,
+        "held_domains": held_domains,
+        "folders": folders,
+    }, None
+
+def _reload_hot_json(name, path, parse_fn):
+    state = _hot_config_state.get(name)
+    if not isinstance(state, dict):
+        return None, None
+
+    fp = _file_fingerprint(path)
+    if fp is None:
+        return state.get("lkg"), None
+    if state.get("seen_fp") == fp:
+        return state.get("lkg"), None
+
+    raw = None
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except Exception as e:
+        state["seen_fp"] = fp
+        return state.get("lkg"), {"event_type": "CONFIG_INVALID", "config_name": name, "error": f"read_failed:{type(e).__name__}"}
+
+    try:
+        text = raw.decode("utf-8")
+    except Exception:
+        try:
+            text = raw.decode("utf-8-sig")
+        except Exception:
+            state["seen_fp"] = fp
+            state["seen_sha"] = hashlib.sha256(raw).hexdigest()
+            return state.get("lkg"), {"event_type": "CONFIG_INVALID", "config_name": name, "error": "decode_failed"}
+
+    try:
+        obj = json.loads(text)
+    except Exception as e:
+        state["seen_fp"] = fp
+        state["seen_sha"] = hashlib.sha256(raw).hexdigest()
+        return state.get("lkg"), {"event_type": "CONFIG_INVALID", "config_name": name, "error": f"invalid_json:{type(e).__name__}"}
+
+    parsed, err = parse_fn(obj)
+    if err:
+        state["seen_fp"] = fp
+        state["seen_sha"] = hashlib.sha256(raw).hexdigest()
+        return state.get("lkg"), {"event_type": "CONFIG_INVALID", "config_name": name, "error": err}
+
+    try:
+        stable = json.dumps(parsed, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except Exception:
+        stable = repr(parsed)
+    sha = hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+    state["seen_fp"] = fp
+    state["seen_sha"] = sha
+    if state.get("lkg_sha") == sha:
+        return state.get("lkg"), None
+
+    state["lkg"] = parsed
+    state["lkg_sha"] = sha
+    return parsed, {"event_type": "CONFIG_CHANGED", "config_name": name}
+
+def load_config_files_each_tick():
+    events = []
+
+    staff_cfg, evt = _reload_hot_json("staff", STAFF_JSON_PATH, _parse_staff_json)
+    if evt:
+        events.append(evt)
+    if staff_cfg is None:
+        staff_cfg = {"staff": get_staff_list(), "off_rotation": [], "leave": []}
+
+    apps_cfg, evt = _reload_hot_json(
+        "apps_team",
+        APPS_TEAM_JSON_PATH,
+        lambda obj: _parse_recipients_json(obj, name="apps_team"),
+    )
+    if evt:
+        events.append(evt)
+    if apps_cfg is None:
+        apps = []
+        if os.path.exists(APPS_TXT_PATH):
+            try:
+                with open(APPS_TXT_PATH, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        s = line.strip()
+                        if not s or s.startswith("#"):
+                            continue
+                        email = normalize_email(s)
+                        if email:
+                            apps.append(email)
+            except Exception:
+                pass
+        apps_cfg = {"recipients": _dedupe_preserve_order(apps)}
+
+    mgr_cfg, evt = _reload_hot_json(
+        "manager_config",
+        MANAGER_CONFIG_JSON_PATH,
+        lambda obj: _parse_recipients_json(obj, name="manager_config"),
+    )
+    if evt:
+        events.append(evt)
+    if mgr_cfg is None:
+        mgrs = []
+        if os.path.exists(MANAGERS_TXT_PATH):
+            try:
+                with open(MANAGERS_TXT_PATH, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        s = line.strip()
+                        if not s or s.startswith("#"):
+                            continue
+                        email = normalize_email(s)
+                        if email:
+                            mgrs.append(email)
+            except Exception:
+                pass
+        mgr_cfg = {"recipients": _dedupe_preserve_order(mgrs)}
+
+    buckets_cfg, evt = _reload_hot_json("system_buckets", SYSTEM_BUCKETS_JSON_PATH, _parse_system_buckets_json)
+    if evt:
+        events.append(evt)
+    if buckets_cfg is None:
+        # Legacy fallback (bot-owned domain_policy.json). No CONFIG_CHANGED logs for legacy.
+        fallback = safe_load_json(DOMAIN_POLICY_PATH, {}, required=False, state_name="domain_policy")
+        if not isinstance(fallback, dict):
+            fallback = {}
+        buckets_cfg = {
+            "transfer_domains": [normalize_domain(d) for d in fallback.get("external_image_request_domains", []) if normalize_domain(d)],
+            "system_notification_domains": [normalize_domain(d) for d in fallback.get("system_notification_domains", []) if normalize_domain(d)],
+            "quarantine_domains": [],
+            "held_domains": [normalize_domain(d) for d in fallback.get("always_hold_domains", []) if normalize_domain(d)],
+            "folders": {},
+        }
+        for k in ("transfer_domains", "system_notification_domains", "held_domains"):
+            buckets_cfg[k] = _dedupe_preserve_order(buckets_cfg[k])
+
+    return {
+        "staff": staff_cfg,
+        "apps_team": apps_cfg,
+        "manager_config": mgr_cfg,
+        "system_buckets": buckets_cfg,
+    }, events
+
 def _parse_iso_safe(iso_str):
     if not isinstance(iso_str, str) or not iso_str:
         return None
@@ -787,6 +1122,39 @@ def _parse_iso_safe(iso_str):
         return datetime.fromisoformat(iso_str)
     except Exception:
         return None
+
+def _add_and_resolve_recipients(mail, addrs, *, kind):
+    recips = mail.Recipients
+    added = 0
+    for a in (addrs or []):
+        if not isinstance(a, str):
+            continue
+        a2 = a.strip()
+        if not a2:
+            continue
+        recips.Add(a2)
+        added += 1
+    if added == 0:
+        return True
+    ok = True
+    try:
+        ok = bool(recips.ResolveAll())
+    except Exception:
+        ok = False
+    if not ok:
+        log(f"RECIPIENTS_RESOLVE_FAIL kind={kind} count={added}", "ERROR")
+        # best-effort unresolved listing
+        try:
+            bad = []
+            for i in range(1, recips.Count + 1):
+                r = recips.Item(i)
+                if hasattr(r, "Resolved") and not r.Resolved:
+                    bad.append(getattr(r, "Name", "unknown"))
+            if bad:
+                log(f"RECIPIENTS_UNRESOLVED kind={kind} names={';'.join(bad)}", "ERROR")
+        except Exception:
+            pass
+    return ok
 
 def _send_hib_burst_alert(outlook_app, to_email, subject, body):
     if not outlook_app or not to_email:
@@ -797,7 +1165,14 @@ def _send_hib_burst_alert(outlook_app, to_email, subject, body):
             log(f"HIB_BURST_ALERT_SUPPRESSED to={to_email} reason={safe_reason}", "WARN")
             return False
         mail = outlook_app.CreateItem(0)
-        mail.To = to_email
+        to_addrs = []
+        if isinstance(to_email, str):
+            to_addrs = [p.strip() for p in to_email.split(";") if p.strip()]
+        elif isinstance(to_email, (list, tuple)):
+            to_addrs = list(to_email)
+        ok = _add_and_resolve_recipients(mail, to_addrs, kind="hib_burst")
+        if not ok:
+            raise Exception("ResolveAll failed")
         mail.Subject = subject
         mail.Body = body
         mail.Send()
@@ -1157,6 +1532,7 @@ def get_known_domains(policy):
         "internal_domains",
         "external_image_request_domains",
         "system_notification_domains",
+        "quarantine_domains",
         "always_hold_domains",
         "vendor_domains"
     ):
@@ -1185,32 +1561,37 @@ def classify_sender_domain(domain, policy):
     """
     Classify sender domain based on policy.
 
-    Returns: external_image_request | system_notification | internal | hold | unknown
+    Returns: quarantine | hold | system_notification | external_image_request | internal | unknown
     """
     if not domain:
         return "unknown"
 
     domain_lower = domain.lower().strip()
 
-    # Check external image request domains (Class 1)
-    external_image_domains = [d.lower().strip() for d in policy.get("external_image_request_domains", [])]
-    if domain_lower in external_image_domains:
-        return "external_image_request"
+    # Check quarantine domains (must run before any assignment/routing)
+    quarantine_domains = [d.lower().strip() for d in policy.get("quarantine_domains", [])]
+    if domain_lower in quarantine_domains:
+        return "quarantine"
+
+    # Check always hold domains (held overrides system_notification)
+    hold_domains = [d.lower().strip() for d in policy.get("always_hold_domains", [])]
+    if domain_lower in hold_domains:
+        return "hold"
 
     # Check system notification domains (Class 3)
     system_notification_domains = [d.lower().strip() for d in policy.get("system_notification_domains", [])]
     if domain_lower in system_notification_domains:
         return "system_notification"
 
+    # Check external image request domains (Class 1)
+    external_image_domains = [d.lower().strip() for d in policy.get("external_image_request_domains", [])]
+    if domain_lower in external_image_domains:
+        return "external_image_request"
+
     # Check internal domains
     internal_domains = [d.lower().strip() for d in policy.get("internal_domains", [])]
     if domain_lower in internal_domains:
         return "internal"
-
-    # Check always hold domains
-    hold_domains = [d.lower().strip() for d in policy.get("always_hold_domains", [])]
-    if domain_lower in hold_domains:
-        return "hold"
 
     # Unknown domain
     return "unknown"
@@ -1237,7 +1618,14 @@ def send_manager_hold_notification(outlook_app, manager_email, original_msg, rea
         return False
     try:
         mail = outlook_app.CreateItem(0)
-        mail.To = manager_email
+        mgr_addrs = []
+        if isinstance(manager_email, str):
+            mgr_addrs = [p.strip() for p in manager_email.split(";") if p.strip()]
+        elif isinstance(manager_email, (list, tuple)):
+            mgr_addrs = list(manager_email)
+        ok = _add_and_resolve_recipients(mail, mgr_addrs, kind="manager_hold_notify")
+        if not ok:
+            raise Exception("ResolveAll failed")
         try:
             subject = original_msg.Subject or ""
         except Exception:
@@ -1879,25 +2267,87 @@ def process_inbox():
     if is_urgent_watchdog_disabled(overrides):
         log("URGENT_WATCHDOG_DISABLED", "INFO")
 
+    hot_cfg, hot_events = load_config_files_each_tick()
+    for ev in hot_events:
+        et = ev.get("event_type")
+        cname = ev.get("config_name", "")
+        if et == "CONFIG_CHANGED":
+            log(f"CONFIG_CHANGED config={cname}", "INFO")
+            append_stats("", "", "", "normal", "", cname, "", event_type="CONFIG_CHANGED", status_after="loaded")
+        elif et == "CONFIG_INVALID":
+            err = ev.get("error", "")
+            log(f"CONFIG_INVALID config={cname} error={err}", "WARN")
+            append_stats("", "", "", "normal", "", cname, "", event_type="CONFIG_INVALID", status_after="rejected")
+
+    staff_cfg = hot_cfg.get("staff") if isinstance(hot_cfg, dict) else {}
+    rr_staff_list = []
+    if isinstance(staff_cfg, dict):
+        staff_all = staff_cfg.get("staff", []) if isinstance(staff_cfg.get("staff"), list) else []
+        off_rotation = staff_cfg.get("off_rotation", []) if isinstance(staff_cfg.get("off_rotation"), list) else []
+        leave = staff_cfg.get("leave", []) if isinstance(staff_cfg.get("leave"), list) else []
+        off_set = set(off_rotation)
+        leave_set = set(leave)
+        rr_staff_list = [e for e in staff_all if e not in off_set and e not in leave_set]
+
+    # Extract domain routing settings (prefer dashboard-managed canonical recipients)
+    apps_cc_addr_override = get_override_addr(overrides, "apps_cc_addr")
+    manager_cc_addr_override = get_override_addr(overrides, "manager_cc_addr")
+    apps_override_list = [part for part in (p.strip() for p in (apps_cc_addr_override or "").split(";")) if part]
+    manager_override_list = [part for part in (p.strip() for p in (manager_cc_addr_override or "").split(";")) if part]
+
+    apps_team_cfg = hot_cfg.get("apps_team") if isinstance(hot_cfg, dict) else {}
+    apps_team_recipients = (
+        apps_team_cfg.get("recipients", [])
+        if isinstance(apps_team_cfg, dict) and isinstance(apps_team_cfg.get("recipients"), list)
+        else []
+    )
+    if not apps_team_recipients:
+        apps_team_recipients = apps_override_list
+
+    manager_cfg = hot_cfg.get("manager_config") if isinstance(hot_cfg, dict) else {}
+    manager_recipients = (
+        manager_cfg.get("recipients", [])
+        if isinstance(manager_cfg, dict) and isinstance(manager_cfg.get("recipients"), list)
+        else []
+    )
+    if not manager_recipients:
+        manager_recipients = manager_override_list
+
+    apps_cc_addr = ";".join(apps_team_recipients) if apps_team_recipients else ""
+    manager_cc_addr = ";".join(manager_recipients) if manager_recipients else ""
+    if len(apps_team_recipients) > 1:
+        log(f"CC_MULTI_RECIPIENTS key=apps_cc_addr count={len(apps_team_recipients)}", "INFO")
+    if len(manager_recipients) > 1:
+        log(f"CC_MULTI_RECIPIENTS key=manager_cc_addr count={len(manager_recipients)}", "INFO")
+
+    apps_cc_list = list(apps_team_recipients)
+
+    buckets_cfg = hot_cfg.get("system_buckets") if isinstance(hot_cfg, dict) else {}
+    folders_cfg = buckets_cfg.get("folders", {}) if isinstance(buckets_cfg, dict) and isinstance(buckets_cfg.get("folders"), dict) else {}
+    default_folders = {
+        "completed": "01_COMPLETED",
+        "non_actionable": "02_PROCESSED",
+        "quarantine": "03_QUARANTINE",
+        "hold": "04_HIB",
+        "system_notification": "05_SYSTEM_NOTIFICATIONS",
+    }
+    effective_config["completed_folder"] = f"Inbox/{folders_cfg.get('completed', default_folders['completed'])}"
+    effective_config["quarantine_folder"] = f"Inbox/{folders_cfg.get('quarantine', default_folders['quarantine'])}"
+    effective_config["system_notification_folder"] = f"Inbox/{folders_cfg.get('system_notification', default_folders['system_notification'])}"
+
     # Load domain policy
     domain_policy, policy_valid = load_domain_policy()
+    if isinstance(buckets_cfg, dict):
+        domain_policy["external_image_request_domains"] = buckets_cfg.get("transfer_domains", domain_policy.get("external_image_request_domains", []))
+        domain_policy["system_notification_domains"] = buckets_cfg.get("system_notification_domains", domain_policy.get("system_notification_domains", []))
+        domain_policy["quarantine_domains"] = buckets_cfg.get("quarantine_domains", domain_policy.get("quarantine_domains", []))
+        domain_policy["always_hold_domains"] = buckets_cfg.get("held_domains", domain_policy.get("always_hold_domains", []))
     policy_source = "valid" if policy_valid else "invalid_fallback"
     known_domains = get_known_domains(domain_policy) if policy_valid else set()
     allowlist_valid = bool(known_domains)
     if not allowlist_valid:
         log("ALLOWLIST_INVALID_FAILSAFE", "ERROR")
     hib_noise_rule = domain_policy.get("hib_noise") if isinstance(domain_policy.get("hib_noise"), dict) else {}
-
-    # Extract domain routing settings from overrides
-    apps_cc_addr = get_override_addr(overrides, "apps_cc_addr")
-    manager_cc_addr = get_override_addr(overrides, "manager_cc_addr")
-    if isinstance(apps_cc_addr, str) and ";" in apps_cc_addr:
-        apps_cc_count = len([part for part in (p.strip() for p in apps_cc_addr.split(";")) if part])
-        log(f"CC_MULTI_RECIPIENTS key=apps_cc_addr count={apps_cc_count}", "INFO")
-    if isinstance(manager_cc_addr, str) and ";" in manager_cc_addr:
-        manager_cc_count = len([part for part in (p.strip() for p in manager_cc_addr.split(";")) if part])
-        log(f"CC_MULTI_RECIPIENTS key=manager_cc_addr count={manager_cc_count}", "INFO")
-    apps_cc_list = [part for part in (p.strip() for p in (apps_cc_addr or "").split(";")) if part]
     unknown_domain_mode = overrides.get("unknown_domain_mode", "hold_manager")
     target_store = overrides.get("target_mailbox_store") or ""
     completion_workflow_enabled = CONFIG.get("enable_completion_workflow", False)
@@ -2002,6 +2452,17 @@ def process_inbox():
                 else:
                     log(f"FOLDER_CREATE_FAIL kind=quarantine name={effective_config['quarantine_folder']}", "ERROR")
             
+            system_notification_folder = None
+            sn_path = effective_config.get("system_notification_folder", "Inbox/05_SYSTEM_NOTIFICATIONS")
+            for _, root in root_candidates:
+                system_notification_folder, _ = resolve_folder(root, sn_path)
+                if system_notification_folder:
+                    break
+            if system_notification_folder:
+                log(f"FOLDER_RESOLVED kind=system_notification path={get_folder_path_safe(system_notification_folder)}", "INFO")
+            else:
+                log(f"FOLDER_NOT_FOUND system_notification_folder={sn_path} mailbox=(configured)", "WARN")
+
             completed_dest = None
             for _, root in root_candidates:
                 completed_dest, _ = resolve_folder(root, effective_config["completed_folder"])
@@ -2115,6 +2576,40 @@ def process_inbox():
                     sender_domain = extract_sender_domain(sender_email)
                     domain_bucket = classify_sender_domain(sender_domain, domain_policy) if sender_domain else "unknown"
 
+                    if domain_bucket == "quarantine":
+                        log(f"ROUTE_QUARANTINE domain={sender_domain}", "WARN")
+                        if not quarantine:
+                            log("ROUTE_QUARANTINE_FAIL reason=folder_missing", "ERROR")
+                            continue
+                        try:
+                            _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                            if not _sb_ok:
+                                log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+                                continue
+                            msg.UnRead = False
+                            msg.Move(quarantine)
+                            log("MOVE_OK kind=quarantine", "INFO")
+                        except Exception as e:
+                            log(f"MOVE_FAIL kind=quarantine error={e}", "ERROR")
+                        continue
+
+                    if domain_bucket == "system_notification":
+                        log(f"ROUTE_SYSTEM_NOTIFICATION domain={sender_domain}", "WARN")
+                        if not system_notification_folder:
+                            log("ROUTE_SYSTEM_NOTIFICATION_FAIL reason=folder_missing", "ERROR")
+                            continue
+                        try:
+                            _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                            if not _sb_ok:
+                                log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+                                continue
+                            msg.UnRead = False
+                            msg.Move(system_notification_folder)
+                            log("MOVE_OK kind=system_notification", "INFO")
+                        except Exception as e:
+                            log(f"MOVE_FAIL kind=system_notification error={e}", "ERROR")
+                        continue
+
                     try:
                         subject = msg.Subject.strip()
                     except:
@@ -2184,7 +2679,9 @@ def process_inbox():
                                     if hib_contains_16110(msg) and apps_cc_addr and not processed_ledger[message_key].get("apps_fwd"):
                                         try:
                                             fwd = msg.Forward()
-                                            fwd.Recipients.Add(apps_cc_addr)
+                                            ok = _add_and_resolve_recipients(fwd, apps_cc_list, kind="apps_team")
+                                            if not ok:
+                                                raise Exception("ResolveAll failed")
                                             is_safe, _ = is_safe_mode()
                                             if not is_safe:
                                                 fwd.Send()
@@ -2222,7 +2719,9 @@ def process_inbox():
                             _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
                             if _sb_ok and manager_cc_addr:
                                 fwd = msg.Forward()
-                                fwd.Recipients.Add(manager_cc_addr)
+                                ok = _add_and_resolve_recipients(fwd, manager_recipients, kind="manager")
+                                if not ok:
+                                    raise Exception("ResolveAll failed")
                                 fwd.Subject = f"[REVIEW] Internal non-staff: {subject_with_id}"
                                 fwd.Body = f"Internal sender not in staff.txt.\nSender: {sender_email}\n\n" + (fwd.Body or "")
                                 is_safe, _ = is_safe_mode()
@@ -2279,7 +2778,9 @@ def process_inbox():
                                     if hib_contains_16110(msg) and apps_cc_addr and not processed_ledger[message_key].get("apps_fwd"):
                                         try:
                                             fwd = msg.Forward()
-                                            fwd.Recipients.Add(apps_cc_addr)
+                                            ok = _add_and_resolve_recipients(fwd, apps_cc_list, kind="apps_team")
+                                            if not ok:
+                                                raise Exception("ResolveAll failed")
                                             is_safe, _ = is_safe_mode()
                                             if not is_safe:
                                                 fwd.Send()

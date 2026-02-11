@@ -1,0 +1,34 @@
+{
+  "transfer_domains": [
+    "bensonradiology.com.au",
+    "jonesradiology.com.au",
+    "radiologysa.com.au",
+    "drjones.com.au",
+    "i-med.com.au"
+  ],
+  "system_notification_domains": [
+    "service-now.com",
+    "health.telstra.com",
+    "google.com",
+    "healthlink.net",
+    "zedtechnologies.com.au",
+    "carestream.com",
+    "materialise.com",
+    "stryker.com",
+    "klsmartin.com",
+    "imagingsol.com.au",
+    "its.jnj.com",
+    "everlightradiology.com",
+    "philips.com",
+    "insidestategovernment.com.au"
+  ],
+  "quarantine_domains": [],
+  "held_domains": [],
+  "folders": {
+    "completed": "01_COMPLETED",
+    "non_actionable": "02_PROCESSED",
+    "quarantine": "03_QUARANTINE",
+    "hold": "04_HIB",
+    "system_notification": "05_SYSTEM_NOTIFICATIONS"
+  }
+}

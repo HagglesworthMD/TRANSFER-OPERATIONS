@@ -7,9 +7,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # ── Data files (read-only except staff.txt) ──
 DAILY_STATS_CSV = BASE_DIR / "daily_stats.csv"
-STAFF_TXT = BASE_DIR / "staff.txt"
-MANAGERS_TXT = BASE_DIR / "managers.txt"
-APPS_TXT = BASE_DIR / "apps.txt"
+STAFF_TXT = BASE_DIR / "staff.txt"          # legacy fallback (do not write)
+MANAGERS_TXT = BASE_DIR / "managers.txt"    # legacy fallback (do not write)
+APPS_TXT = BASE_DIR / "apps.txt"            # legacy fallback (do not write)
+
+# Canonical dashboard-managed config (write-only targets)
+STAFF_JSON = BASE_DIR / "staff.json"
+APPS_TEAM_JSON = BASE_DIR / "apps_team.json"
+MANAGER_CONFIG_JSON = BASE_DIR / "manager_config.json"
+SYSTEM_BUCKETS_JSON = BASE_DIR / "system_buckets.json"
 ROSTER_STATE_JSON = BASE_DIR / "roster_state.json"
 SETTINGS_OVERRIDES_JSON = BASE_DIR / "settings_overrides.json"
 HIB_WATCHDOG_JSON = BASE_DIR / "hib_watchdog.json"
