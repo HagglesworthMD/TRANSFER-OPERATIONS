@@ -80,6 +80,52 @@ def _median(vals: list[float]) -> float:
     return _percentile(vals, 0.5)
 
 
+# ── Business-hours constants ──
+_BH_START_H, _BH_START_M = 8, 30   # 08:30
+_BH_END_H,   _BH_END_M   = 17, 0  # 17:00
+_BH_DAY_SEC = ((_BH_END_H * 60 + _BH_END_M) - (_BH_START_H * 60 + _BH_START_M)) * 60  # 30600
+
+
+def _business_seconds(start: datetime, end: datetime) -> float:
+    """Return seconds between *start* and *end* that fall inside
+    business hours (08:30-17:00 Mon-Fri).  Returns 0 if end <= start
+    or no business time elapsed."""
+    if end <= start:
+        return 0.0
+
+    from datetime import time as _time, timedelta as _td
+
+    bh_open  = _time(_BH_START_H, _BH_START_M)
+    bh_close = _time(_BH_END_H,   _BH_END_M)
+    total = 0.0
+    cur = start
+
+    # Cap to a reasonable max (30 calendar days) to avoid runaway loops
+    if (end - start).days > 30:
+        return 0.0
+
+    while cur < end:
+        # Skip weekends
+        if cur.weekday() >= 5:
+            cur = cur.replace(hour=0, minute=0, second=0, microsecond=0) + _td(days=1)
+            continue
+
+        day_open  = cur.replace(hour=_BH_START_H, minute=_BH_START_M, second=0, microsecond=0)
+        day_close = cur.replace(hour=_BH_END_H,   minute=_BH_END_M,   second=0, microsecond=0)
+
+        # Effective window for this day
+        win_start = max(cur, day_open)
+        win_end   = min(end, day_close)
+
+        if win_start < win_end:
+            total += (win_end - win_start).total_seconds()
+
+        # Advance to next calendar day 00:00
+        cur = cur.replace(hour=0, minute=0, second=0, microsecond=0) + _td(days=1)
+
+    return total
+
+
 def _staff_display_name(email: str) -> str:
     local = email.split("@")[0] if "@" in email else email
     return local.replace(".", " ").replace("_", " ").strip().title()
@@ -202,7 +248,7 @@ def _normalise_rows(rows: list[dict]) -> list[dict]:
         # Duration
         duration_sec = _safe_float(row.get("duration_sec"))
         if duration_sec is None and assigned_ts and completed_ts:
-            duration_sec = max(0.0, (completed_ts - assigned_ts).total_seconds())
+            duration_sec = max(0.0, _business_seconds(assigned_ts, completed_ts))
 
         # Event timestamp for sorting
         if event_type_raw == "COMPLETED" and completed_ts:
@@ -273,32 +319,27 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     processed = len([e for e in filtered if e["event_type"] == "ASSIGNED"])
     completions = len([e for e in filtered if e["event_type"] == "COMPLETED"])
 
-    # Build active set from ALL events (not date-filtered) so we track
+    # Build active count from ALL events (not date-filtered) so we track
     # truly open tickets regardless of when they were assigned.
-    assigned_keys: dict[str, dict] = {}
-    completed_keys: set[str] = set()
-    assigned_by_staff: dict[str, int] = {}
-    completed_by_staff: dict[str, int] = {}
+    # Use count-based approach (msg_keys differ between ASSIGNED/COMPLETED).
+    total_assigned_by_staff: dict[str, int] = defaultdict(int)
+    total_completed_by_staff: dict[str, int] = defaultdict(int)
 
     for e in events:
         if e["event_type"] == "ASSIGNED":
-            if e["msg_key"]:
-                assigned_keys[e["msg_key"]] = e
-            elif _is_staff(e["assigned_to"]):
-                assigned_by_staff[e["assigned_to"]] = assigned_by_staff.get(e["assigned_to"], 0) + 1
-        if e["event_type"] == "COMPLETED":
-            if e["msg_key"]:
-                completed_keys.add(e["msg_key"])
-            elif _is_staff(e["sender"]):
-                completed_by_staff[e["sender"]] = completed_by_staff.get(e["sender"], 0) + 1
+            email = (e.get("assigned_to") or "").strip().lower()
+            if _is_staff(email):
+                total_assigned_by_staff[email] += 1
+        elif e["event_type"] == "COMPLETED":
+            email = (e.get("sender") or "").strip().lower()
+            if not _is_staff(email):
+                email = (e.get("assigned_to") or "").strip().lower()
+            if _is_staff(email):
+                total_completed_by_staff[email] += 1
 
-    active_items = {k: v for k, v in assigned_keys.items() if k not in completed_keys}
-    active_count = len(active_items)
-
-    # Add legacy count (assigned - completed per staff, but can't go negative)
-    for staff, count in assigned_by_staff.items():
-        legacy_active = max(0, count - completed_by_staff.get(staff, 0))
-        active_count += legacy_active
+    active_count = 0
+    for staff in set(total_assigned_by_staff) | set(total_completed_by_staff):
+        active_count += max(0, total_assigned_by_staff.get(staff, 0) - total_completed_by_staff.get(staff, 0))
 
     errors = len([e for e in filtered if e["assigned_to"] == "error" or e["risk_level"] == "error"])
 
@@ -360,7 +401,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     }
 
     # ── Per-staff KPIs (filtered range for counts, all events for active) ──
-    staff_kpis = _compute_staff_kpis(filtered, events)
+    staff_kpis = _compute_staff_kpis(filtered, events, date_start=ds, date_end=de)
 
     # ── Hourly activity ──
     hourly = _compute_hourly(filtered)
@@ -454,11 +495,15 @@ def _compute_requestor_distribution(events: list[dict], top_n: int = 15) -> dict
     return top
 
 
-def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = None) -> list[dict]:
+def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = None,
+                        date_start: str | None = None,
+                        date_end: str | None = None) -> list[dict]:
     """Per-staff KPI table data.
 
     *filtered* is the date-range subset (for assigned/completed counts).
     *all_events* is the full dataset (for truly-open active count).
+    *date_start* is the YYYY-MM-DD lower bound so we can pre-consume the
+    FIFO queue with completions before the filtered range.
     If all_events is None, falls back to filtered for backwards compat.
     """
     # Group by staff email — counts from filtered range
@@ -466,15 +511,97 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     staff_completed: dict[str, int] = defaultdict(int)
     staff_durations: dict[str, list[float]] = defaultdict(list)
 
+    def _resolve_received_ts(e: dict, kind: str) -> datetime | None:
+        """Resolve best available timestamp for assignment/completion receive time."""
+        if kind == "assigned":
+            ts = e.get("assigned_ts") or e.get("event_ts")
+        else:
+            ts = e.get("completed_ts") or e.get("event_ts")
+        if ts:
+            return ts
+
+        date_raw = e.get("date") or e.get("Date")
+        time_raw = e.get("time") or e.get("Time")
+        date_str = date_raw.strip() if isinstance(date_raw, str) else ""
+        time_str = time_raw.strip() if isinstance(time_raw, str) else ""
+        if not date_str or not time_str:
+            return None
+
+        return _parse_ts(f"{date_str}T{time_str}") or _parse_ts(f"{date_str} {time_str}")
+
+    def _resolve_staff_email(e, et):
+        assigned_email = (e.get("assigned_to") or "").strip().lower()
+        if _is_staff(assigned_email):
+            return assigned_email
+        if et == "COMPLETED":
+            sender_email = (e.get("sender") or e.get("Sender") or "").strip().lower()
+            if _is_staff(sender_email):
+                return sender_email
+        return None
+
+    # For inferred durations on COMPLETED events that don't have duration_sec:
+    # earliest ASSIGNED timestamp per msg_key, sourced from all_events when available.
+    earliest_assigned_ts_by_key: dict[str, datetime] = {}
+    for e in (all_events if all_events is not None else filtered):
+        if e["event_type"] != "ASSIGNED":
+            continue
+        key = e.get("msg_key") or ""
+        if not key:
+            continue
+        ts = _resolve_received_ts(e, "assigned")
+        if not ts:
+            continue
+        prev = earliest_assigned_ts_by_key.get(key)
+        if prev is None or ts < prev:
+            earliest_assigned_ts_by_key[key] = ts
+
+    # Fallback: per-staff ASSIGNED timestamps for FIFO matching
+    # when msg_key matching is not possible.
+    staff_assigned_ts_queue: dict[str, list[datetime]] = defaultdict(list)
+    for e in (all_events if all_events is not None else filtered):
+        if e["event_type"] != "ASSIGNED":
+            continue
+        a_email = _resolve_staff_email(e, "ASSIGNED")
+        if not a_email:
+            continue
+        ts = _resolve_received_ts(e, "assigned")
+        if ts:
+            staff_assigned_ts_queue[a_email].append(ts)
+    for q in staff_assigned_ts_queue.values():
+        q.sort()
+
+    # Pre-consume FIFO queue with completions BEFORE the filtered date range.
+    # Without this, a narrow filter (e.g. TODAY) leaves the queue full of
+    # old assignments, causing today's completions to match stale entries.
+    # Only pop assignment entries that are themselves before the range so we
+    # never steal today's assignments for yesterday's completions.
+    if date_start and all_events is not None:
+        range_start_dt = _parse_ts(f"{date_start}T00:00:00")
+        for e in all_events:
+            if e["event_type"] != "COMPLETED":
+                continue
+            if (e.get("date") or "") >= date_start:
+                continue  # inside or after the range — leave for the main loop
+            email = _resolve_staff_email(e, "COMPLETED")
+            if not email:
+                continue
+            # Try msg_key match first (no queue consumption needed)
+            key = e.get("msg_key") or ""
+            if key and earliest_assigned_ts_by_key.get(key):
+                continue
+            # Consume one FIFO entry, but only if it's before the date range.
+            # This prevents yesterday's excess completions from eating today's
+            # assignments.
+            if staff_assigned_ts_queue.get(email):
+                if range_start_dt and staff_assigned_ts_queue[email][0] >= range_start_dt:
+                    continue  # next queue entry is inside the range — don't consume
+                staff_assigned_ts_queue[email].pop(0)
+
     for e in filtered:
         et = e["event_type"]
-        email = e["assigned_to"]
-
-        if not _is_staff(email):
-            if et == "COMPLETED" and _is_staff(e["sender"]):
-                email = e["sender"]
-            else:
-                continue
+        email = _resolve_staff_email(e, et)
+        if not email:
+            continue
 
         if et == "ASSIGNED":
             staff_assigned[email] += 1
@@ -482,37 +609,53 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             staff_completed[email] += 1
             if e["duration_sec"] is not None and e["duration_sec"] > 0:
                 staff_durations[email].append(e["duration_sec"])
+            else:
+                key = e.get("msg_key") or ""
+                assigned_ts = earliest_assigned_ts_by_key.get(key) if key else None
+                completed_ts = _resolve_received_ts(e, "completed")
+                if assigned_ts and completed_ts:
+                    inferred_sec = _business_seconds(assigned_ts, completed_ts)
+                    if inferred_sec > 0:
+                        staff_durations[email].append(inferred_sec)
+                elif completed_ts and staff_assigned_ts_queue.get(email):
+                    while staff_assigned_ts_queue[email]:
+                        a_ts = staff_assigned_ts_queue[email][0]
+                        if a_ts >= completed_ts:
+                            break  # assignment is after completion — stop, don't waste entries
+                        staff_assigned_ts_queue[email].pop(0)
+                        delta = _business_seconds(a_ts, completed_ts)
+                        if 0 < delta <= _BH_DAY_SEC * 10:
+                            staff_durations[email].append(delta)
+                            break
 
-    # Track msg_keys for active count from ALL events
-    staff_assigned_keys: dict[str, set] = defaultdict(set)
-    staff_completed_keys: dict[str, set] = defaultdict(set)
+    # Track active count from ALL events using simple counts.
+    # (msg_keys differ between ASSIGNED and COMPLETED events so set
+    #  subtraction doesn't work — use count-based approach instead.)
+    staff_all_assigned: dict[str, int] = defaultdict(int)
+    staff_all_completed: dict[str, int] = defaultdict(int)
 
     for e in (all_events if all_events is not None else filtered):
         et = e["event_type"]
-        email = e["assigned_to"]
+        email = _resolve_staff_email(e, et)
+        if not email:
+            continue
 
-        if not _is_staff(email):
-            if et == "COMPLETED" and _is_staff(e["sender"]):
-                email = e["sender"]
-            else:
-                continue
+        if et == "ASSIGNED":
+            staff_all_assigned[email] += 1
+        elif et == "COMPLETED":
+            staff_all_completed[email] += 1
 
-        if et == "ASSIGNED" and e["msg_key"]:
-            staff_assigned_keys[email].add(e["msg_key"])
-        elif et == "COMPLETED" and e["msg_key"]:
-            staff_completed_keys[email].add(e["msg_key"])
-
-    all_emails = set(staff_assigned) | set(staff_completed) | set(staff_assigned_keys)
+    all_emails = set(staff_assigned) | set(staff_completed) | set(staff_all_assigned)
     result = []
     for email in sorted(all_emails):
         assigned = staff_assigned.get(email, 0)
         completed = staff_completed.get(email, 0)
-        active = len(staff_assigned_keys.get(email, set()) - staff_completed_keys.get(email, set()))
+        active = max(0, staff_all_assigned.get(email, 0) - staff_all_completed.get(email, 0))
 
         durations_min = sorted([d / 60.0 for d in staff_durations.get(email, [])])
         median_min = round(_median(durations_min), 1) if durations_min else None
         p90_min = round(_percentile(durations_min, 0.9), 1) if durations_min else None
-        low_confidence = len(durations_min) < config.LOW_CONFIDENCE_MIN_COMPLETIONS
+        low_confidence = False
 
         result.append({
             "email": email,
