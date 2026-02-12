@@ -12,6 +12,7 @@ const App = {
         KPITable.init();
         StaffPanel.init();
         ActivityFeed.init();
+        HourlyDetail.init();
         this._initDateControls();
 
         // Keyboard shortcut: R to force refresh
@@ -154,6 +155,7 @@ const App = {
             KPITable.update(data.staff_kpis);
             Charts.update(data);
             ActivityFeed.update(data.activity_feed);
+            HourlyDetail.update(data.hourly_detail);
             LiveInsights.update(data);
 
             // Update range label

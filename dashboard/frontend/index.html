@@ -140,6 +140,7 @@
                 <div class="chart-container chart-wide">
                     <canvas id="chart-hourly"></canvas>
                 </div>
+                <p class="chart-hint">Click a bar to filter the detail table below</p>
             </div>
             <div class="card panel-small chart-stack">
                 <div class="chart-half">
@@ -153,6 +154,38 @@
                     <div class="chart-container">
                         <canvas id="chart-domain"></canvas>
                     </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Hourly Detail Table -->
+        <section class="hourly-detail-row" id="hourly-detail-section">
+            <div class="card panel-full">
+                <h2 class="panel-title">
+                    Hourly Detail <span class="badge" id="hourly-detail-count">0</span>
+                    <span id="hourly-filter-label" style="display:none">
+                        — Showing <strong id="hourly-filter-hour"></strong>
+                    </span>
+                </h2>
+                <div class="feed-controls">
+                    <label>Source:</label>
+                    <select id="hourly-source-filter" class="staff-filter-select">
+                        <option value="">All Sources</option>
+                    </select>
+                    <button id="hourly-clear-filter" class="clear-filter-btn" style="display:none">Clear</button>
+                </div>
+                <div class="feed-wrap">
+                    <table class="feed-table" id="hourly-detail-table">
+                        <thead><tr>
+                            <th class="sortable" data-sort="time">Time</th>
+                            <th class="sortable" data-sort="source">Source</th>
+                            <th class="sortable" data-sort="type">Type</th>
+                            <th class="sortable" data-sort="subject">Subject</th>
+                            <th class="sortable" data-sort="staff">Staff</th>
+                            <th class="sortable" data-sort="risk">Risk</th>
+                        </tr></thead>
+                        <tbody id="hourly-detail-tbody"></tbody>
+                    </table>
                 </div>
             </div>
         </section>
@@ -293,6 +326,7 @@
     <script src="/js/summary_cards.js"></script>
     <script src="/js/kpi_table.js"></script>
     <script src="/js/charts.js"></script>
+    <script src="/js/hourly_detail.js"></script>
     <script src="/js/activity_feed.js"></script>
     <script src="/js/insights.js"></script>
     <script src="/js/staff_panel.js"></script>

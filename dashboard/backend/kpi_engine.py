@@ -131,6 +131,59 @@ def _staff_display_name(email: str) -> str:
     return local.replace(".", " ").replace("_", " ").strip().title()
 
 
+# ── Sender → source label mapping ──
+_SENDER_DOMAIN_MAP = {
+    "jonesradiology.com.au": "Jones",
+    "drjones.com.au": "Jones",
+    "jonesradiology.atlassian.net": "Jones",
+    "bensonradiology.com.au": "Bensons",
+    "radiologysa.com.au": "RadSA",
+    "i-med.com.au": "I-MED",
+}
+
+_system_notification_domains: set[str] | None = None
+
+
+def _load_system_domains() -> set[str]:
+    global _system_notification_domains
+    if _system_notification_domains is not None:
+        return _system_notification_domains
+    from . import data_reader
+    data, _ = data_reader.load_json(config.SYSTEM_BUCKETS_JSON)
+    if data:
+        _system_notification_domains = {
+            d.lower().strip() for d in data.get("system_notification_domains", [])
+            if "@" not in d  # skip full-address entries like quarantine@...
+        }
+    else:
+        _system_notification_domains = set()
+    return _system_notification_domains
+
+
+def _sender_display_name(email: str) -> str:
+    """Map sender email to a friendly source label."""
+    if not email or "@" not in email:
+        return "Unknown"
+    domain = email.split("@")[1].lower().strip()
+
+    # Known domains
+    label = _SENDER_DOMAIN_MAP.get(domain)
+    if label:
+        return label
+
+    # System notification domains
+    sys_domains = _load_system_domains()
+    if domain in sys_domains:
+        return "System"
+
+    # *.gov.au → Internal
+    if domain.endswith(".gov.au"):
+        return "Internal"
+
+    # Fallback: titlecase first part of domain
+    return domain.split(".")[0].title()
+
+
 def _compute_hib_burst_status(hib_state: dict | None) -> dict:
     """Compute HIB burst status from hib_watchdog.json state.
 
@@ -406,6 +459,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
 
     # ── Hourly activity ──
     hourly = _compute_hourly(filtered)
+    hourly_detail = _compute_hourly_detail(filtered)
 
     # ── Risk level distribution ──
     risk_dist = _compute_distribution(filtered, "risk_level",
@@ -435,6 +489,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
         "summary": summary,
         "staff_kpis": staff_kpis,
         "hourly": hourly,
+        "hourly_detail": hourly_detail,
         "risk_distribution": risk_dist,
         "domain_distribution": domain_dist,
         "assignment_pie": assignment_pie,
@@ -460,6 +515,7 @@ def _empty_dashboard(now: datetime, roster_state: dict | None, hib_state: dict |
         },
         "staff_kpis": [],
         "hourly": {},
+        "hourly_detail": {"hours": {}, "all_sources": []},
         "risk_distribution": {},
         "domain_distribution": {},
         "assignment_pie": {},
@@ -693,6 +749,57 @@ def _compute_hourly(events: list[dict]) -> dict[str, dict[str, int]]:
         elif e["event_type"] == "COMPLETED":
             hourly[key]["completed"] += 1
     return hourly
+
+
+def _compute_hourly_detail(events: list[dict]) -> dict[str, Any]:
+    """Detailed hourly breakdown with source attribution and per-event data."""
+    hours: dict[str, dict] = {}
+    all_sources: set[str] = set()
+
+    # Initialise all 24 hours
+    for h in range(24):
+        key = f"{h:02d}:00"
+        hours[key] = {"sources": {}, "events": [], "total": 0}
+
+    for e in events:
+        ts = e.get("event_ts")
+        if not ts:
+            continue
+        if e["event_type"] not in ("ASSIGNED", "COMPLETED"):
+            continue
+
+        key = f"{ts.hour:02d}:00"
+        sender = e.get("sender", "") or ""
+        source = _sender_display_name(sender)
+        all_sources.add(source)
+
+        bucket = hours[key]
+        bucket["sources"][source] = bucket["sources"].get(source, 0) + 1
+        bucket["total"] += 1
+
+        # Resolve staff display name
+        staff_email = e.get("assigned_to", "")
+        staff_name = _staff_display_name(staff_email) if _is_staff(staff_email) else staff_email
+
+        bucket["events"].append({
+            "time": ts.strftime("%H:%M:%S"),
+            "sender": sender,
+            "source": source,
+            "type": e["event_type"],
+            "action": e.get("action", ""),
+            "subject": (e.get("subject") or "")[:80],
+            "staff": staff_name,
+            "risk": e.get("risk_level", "normal") or "normal",
+        })
+
+    # Sort events within each hour descending by time
+    for bucket in hours.values():
+        bucket["events"].sort(key=lambda x: x["time"], reverse=True)
+
+    return {
+        "hours": hours,
+        "all_sources": sorted(all_sources),
+    }
 
 
 def _compute_distribution(events: list[dict], field: str,

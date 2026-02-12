@@ -16,9 +16,25 @@ const Charts = {
         low: '#66bb6a',
     },
 
+    _sourceColors: {
+        'Jones':    { bg: 'rgba(66, 165, 245, 0.7)',  border: '#42a5f5' },
+        'Bensons':  { bg: 'rgba(102, 187, 106, 0.7)', border: '#66bb6a' },
+        'System':   { bg: 'rgba(120, 144, 156, 0.7)', border: '#78909c' },
+        'RadSA':    { bg: 'rgba(255, 202, 40, 0.7)',  border: '#ffca28' },
+        'I-MED':    { bg: 'rgba(171, 71, 188, 0.7)',  border: '#ab47bc' },
+        'Internal': { bg: 'rgba(38, 198, 218, 0.7)',  border: '#26c6da' },
+    },
+
+    _hourlyDetail: null,
+
     update(data) {
         if (!data) return;
-        this._updateHourly(data.hourly);
+        if (data.hourly_detail) {
+            this._hourlyDetail = data.hourly_detail;
+            this._updateHourlyStacked(data.hourly_detail);
+        } else {
+            this._updateHourlyLegacy(data.hourly);
+        }
         this._updateDoughnut('chart-assignment-pie', data.assignment_pie, 'Assignments');
         this._updateDoughnut('chart-risk', data.risk_distribution, 'Risk Levels', this._riskColors);
         this._updateDoughnut('chart-domain', data.domain_distribution, 'Domains');
@@ -30,23 +46,92 @@ const Charts = {
             if (!chart) return;
 
             if (chart.config.type === 'bar') {
-                const barColors = this._barDatasetColors();
-                chart.data.datasets[0].backgroundColor = barColors.assignedBackground;
-                chart.data.datasets[0].borderColor = barColors.assignedBorder;
-                chart.data.datasets[1].backgroundColor = barColors.completedBackground;
-                chart.data.datasets[1].borderColor = barColors.completedBorder;
-                chart.options = this._barOptions();
+                if (this._hourlyDetail) {
+                    // Stacked chart — rebuild datasets with new theme colors
+                    this._updateHourlyStacked(this._hourlyDetail);
+                } else {
+                    const barColors = this._barDatasetColors();
+                    if (chart.data.datasets[0]) {
+                        chart.data.datasets[0].backgroundColor = barColors.assignedBackground;
+                        chart.data.datasets[0].borderColor = barColors.assignedBorder;
+                    }
+                    if (chart.data.datasets[1]) {
+                        chart.data.datasets[1].backgroundColor = barColors.completedBackground;
+                        chart.data.datasets[1].borderColor = barColors.completedBorder;
+                    }
+                    chart.options = this._barOptions();
+                    chart.update('none');
+                }
             } else if (chart.config.type === 'doughnut') {
                 const title = this._doughnutTitles[id] || '';
                 chart.data.datasets[0].borderColor = this._getCssVar('--chart-border', 'rgba(15, 25, 35, 0.8)');
                 chart.options = this._doughnutOptions(title);
+                chart.update('none');
             }
-
-            chart.update('none');
         });
     },
 
-    _updateHourly(hourly) {
+    _getSourceColor(source) {
+        if (this._sourceColors[source]) return this._sourceColors[source];
+        // Fallback: pick from color palette by hash
+        let hash = 0;
+        for (let i = 0; i < source.length; i++) hash = (hash * 31 + source.charCodeAt(i)) & 0x7fffffff;
+        const base = this._colors[hash % this._colors.length];
+        return { bg: base + 'b3', border: base };
+    },
+
+    _updateHourlyStacked(detail) {
+        if (!detail || !detail.hours) return;
+        const id = 'chart-hourly';
+        const labels = Object.keys(detail.hours).sort();
+        const sources = detail.all_sources || [];
+
+        const datasets = sources.map(source => {
+            const sc = this._getSourceColor(source);
+            return {
+                label: source,
+                data: labels.map(h => (detail.hours[h]?.sources || {})[source] || 0),
+                backgroundColor: sc.bg,
+                borderColor: sc.border,
+                borderWidth: 1,
+                borderRadius: 4,
+            };
+        });
+
+        const opts = this._stackedBarOptions();
+        const self = this;
+
+        if (this._instances[id]) {
+            const chart = this._instances[id];
+            chart.data.labels = labels;
+            chart.data.datasets = datasets;
+            chart.options = opts;
+            chart.update('none');
+            return;
+        }
+
+        const ctx = document.getElementById(id);
+        if (!ctx) return;
+
+        this._instances[id] = new Chart(ctx, {
+            type: 'bar',
+            data: { labels, datasets },
+            options: opts,
+        });
+
+        // Click handler — dispatch custom event with clicked hour
+        ctx.addEventListener('click', (evt) => {
+            const chart = self._instances[id];
+            if (!chart) return;
+            const points = chart.getElementsAtEventForMode(evt, 'index', { intersect: false }, false);
+            if (points.length > 0) {
+                const hour = chart.data.labels[points[0].index];
+                document.dispatchEvent(new CustomEvent('hourly-bar-click', { detail: { hour } }));
+            }
+        });
+    },
+
+    _updateHourlyLegacy(hourly) {
         if (!hourly) return;
         const id = 'chart-hourly';
         const labels = Object.keys(hourly);
@@ -57,12 +142,24 @@ const Charts = {
         if (this._instances[id]) {
             const chart = this._instances[id];
             chart.data.labels = labels;
-            chart.data.datasets[0].data = assignedData;
-            chart.data.datasets[1].data = completedData;
-            chart.data.datasets[0].backgroundColor = barColors.assignedBackground;
-            chart.data.datasets[0].borderColor = barColors.assignedBorder;
-            chart.data.datasets[1].backgroundColor = barColors.completedBackground;
-            chart.data.datasets[1].borderColor = barColors.completedBorder;
+            chart.data.datasets = [
+                {
+                    label: 'Assigned',
+                    data: assignedData,
+                    backgroundColor: barColors.assignedBackground,
+                    borderColor: barColors.assignedBorder,
+                    borderWidth: 1,
+                    borderRadius: 4,
+                },
+                {
+                    label: 'Completed',
+                    data: completedData,
+                    backgroundColor: barColors.completedBackground,
+                    borderColor: barColors.completedBorder,
+                    borderWidth: 1,
+                    borderRadius: 4,
+                },
+            ];
             chart.options = this._barOptions();
             chart.update('none');
             return;
@@ -184,6 +281,21 @@ const Charts = {
                 },
             },
         };
+    },
+
+    _stackedBarOptions() {
+        const base = this._barOptions();
+        base.scales.x.stacked = true;
+        base.scales.y.stacked = true;
+        base.plugins.tooltip.mode = 'index';
+        base.plugins.tooltip.intersect = false;
+        base.onClick = (evt, elements, chart) => {
+            if (elements.length > 0) {
+                const hour = chart.data.labels[elements[0].index];
+                document.dispatchEvent(new CustomEvent('hourly-bar-click', { detail: { hour } }));
+            }
+        };
+        return base;
     },
 
     _doughnutOptions(title) {

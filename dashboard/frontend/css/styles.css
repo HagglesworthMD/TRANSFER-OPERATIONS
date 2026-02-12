@@ -1117,3 +1117,111 @@ body {
     color: #ef4444;
     border: 1px solid rgba(239, 68, 68, 0.3);
 }
+
+/* ── Hourly Detail Section ── */
+.hourly-detail-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 18px;
+}
+
+.panel-full {
+    min-height: 200px;
+    display: flex;
+    flex-direction: column;
+}
+
+.panel-full .feed-wrap {
+    flex: 1;
+    max-height: 500px;
+}
+
+.chart-hint {
+    font-size: 0.76rem;
+    color: var(--text-muted);
+    text-align: center;
+    padding: 0 16px 8px;
+    margin: 0;
+    font-style: italic;
+}
+
+/* ── Source Badges ── */
+.source-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.74rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.source-badge[data-source="jones"] {
+    background: rgba(66, 165, 245, 0.15);
+    color: #42a5f5;
+}
+
+.source-badge[data-source="bensons"] {
+    background: rgba(102, 187, 106, 0.15);
+    color: #66bb6a;
+}
+
+.source-badge[data-source="system"] {
+    background: rgba(120, 144, 156, 0.15);
+    color: #78909c;
+}
+
+.source-badge[data-source="radsa"] {
+    background: rgba(255, 202, 40, 0.15);
+    color: #ffca28;
+}
+
+.source-badge[data-source="i-med"] {
+    background: rgba(171, 71, 188, 0.15);
+    color: #ab47bc;
+}
+
+.source-badge[data-source="internal"] {
+    background: rgba(38, 198, 218, 0.15);
+    color: #26c6da;
+}
+
+.source-badge[data-source="unknown"] {
+    background: var(--bg-soft);
+    color: var(--text-muted);
+}
+
+/* Light theme overrides for source badges */
+:root[data-theme='light'] .source-badge[data-source="jones"] {
+    background: rgba(29, 111, 191, 0.12);
+    color: #1565c0;
+}
+
+:root[data-theme='light'] .source-badge[data-source="bensons"] {
+    background: rgba(46, 125, 50, 0.12);
+    color: #2e7d32;
+}
+
+:root[data-theme='light'] .source-badge[data-source="system"] {
+    background: rgba(96, 125, 139, 0.12);
+    color: #546e7a;
+}
+
+:root[data-theme='light'] .source-badge[data-source="radsa"] {
+    background: rgba(178, 106, 0, 0.12);
+    color: #b26a00;
+}
+
+:root[data-theme='light'] .source-badge[data-source="i-med"] {
+    background: rgba(109, 76, 156, 0.12);
+    color: #6d4c9c;
+}
+
+:root[data-theme='light'] .source-badge[data-source="internal"] {
+    background: rgba(0, 131, 143, 0.12);
+    color: #00838f;
+}
+
+:root[data-theme='light'] .chart-hint {
+    color: var(--text-muted);
+}
