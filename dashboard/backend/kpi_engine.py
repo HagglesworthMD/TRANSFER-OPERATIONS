@@ -395,7 +395,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     for staff in set(total_assigned_by_staff) | set(total_completed_by_staff):
         active_count += max(0, total_assigned_by_staff.get(staff, 0) - total_completed_by_staff.get(staff, 0))
 
-    errors = len([e for e in filtered if e["assigned_to"] == "error" or e["risk_level"] == "error"])
+    active_staff = len(staff_list) if staff_list else 0
 
     # Avg completion time
     durations = [
@@ -445,7 +445,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
         "processed_today": processed,
         "completions_today": completions,
         "active_count": active_count,
-        "errors_today": errors,
+        "active_staff": active_staff,
         "avg_time_sec": round(avg_time_sec, 1),
         "avg_time_human": format_duration_human(avg_time_sec) if avg_time_sec else "N/A",
         "uptime": uptime_str,
@@ -507,7 +507,7 @@ def _empty_dashboard(now: datetime, roster_state: dict | None, hib_state: dict |
     return {
         "summary": {
             "processed_today": 0, "completions_today": 0, "active_count": 0,
-            "errors_today": 0, "avg_time_sec": 0, "avg_time_human": "N/A",
+            "active_staff": 0, "avg_time_sec": 0, "avg_time_human": "N/A",
             "uptime": None,
             "total_processed": roster_state.get("total_processed") if roster_state else None,
             "next_staff": None,

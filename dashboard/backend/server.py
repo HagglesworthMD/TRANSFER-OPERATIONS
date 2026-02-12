@@ -380,6 +380,15 @@ def _save_domain_policy_payload(payload: dict) -> tuple[bool, str | None]:
         ok, werr, _changed = _atomic_write_json_if_changed(path, obj)
         if not ok:
             return False, f"Failed to write {path.name}: {werr}"
+
+    # Keep legacy staff.txt in sync so fallback path is always correct
+    try:
+        with open(config.STAFF_TXT, "w", encoding="utf-8") as f:
+            for email in staff_rr:
+                f.write(email + "\n")
+    except Exception:
+        pass  # non-fatal — staff.json is the canonical source
+
     return True, None
 
 app = FastAPI(title="Transfer-Bot Dashboard API")

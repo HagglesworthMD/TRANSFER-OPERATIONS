@@ -8,7 +8,7 @@ const SummaryCards = {
         this._set('card-processed', summary.processed_today);
         this._set('card-completions', summary.completions_today);
         this._set('card-active', summary.active_count);
-        this._set('card-errors', summary.errors_today);
+        this._set('card-active-staff', summary.active_staff);
         this._set('card-avg-time', summary.avg_time_human || 'N/A');
         this._set('card-uptime',
             summary.uptime || '—'

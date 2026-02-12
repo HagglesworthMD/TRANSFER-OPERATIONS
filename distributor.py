@@ -1273,7 +1273,34 @@ def hib_contains_16110(msg):
 
 # ==================== FILE OPERATIONS ====================
 def get_staff_list():
-    """Load staff list from file"""
+    """Load staff list from file, preferring staff.json over staff.txt.
+
+    staff.json is the canonical source (written by the dashboard).
+    staff.txt is the legacy fallback. When staff.json is used the
+    off_rotation and leave lists are respected so dashboard changes
+    take effect immediately.
+    """
+    # Prefer staff.json (hot-reloaded by dashboard) over legacy staff.txt
+    try:
+        json_path = os.path.abspath(STAFF_JSON_PATH)
+        if os.path.exists(json_path):
+            with open(json_path, 'r', encoding="utf-8") as f:
+                scfg = json.load(f)
+            if isinstance(scfg, dict) and isinstance(scfg.get("staff"), list) and scfg["staff"]:
+                all_staff = [e.strip().lower() for e in scfg["staff"] if e.strip()]
+                off = set((e.strip().lower() for e in (scfg.get("off_rotation") or [])))
+                leave = set((e.strip().lower() for e in (scfg.get("leave") or [])))
+                staff = [e for e in all_staff if e not in off and e not in leave]
+                log(
+                    f"STAFF_LOADED members={len(staff)} source=staff.json "
+                    f"off_rotation={len(off)} leave={len(leave)}",
+                    "INFO",
+                )
+                return staff
+    except Exception as e:
+        log(f"STAFF_JSON_ERROR path={STAFF_JSON_PATH} error={e} falling_back=staff.txt", "WARN")
+
+    # Fallback to legacy staff.txt
     try:
         staff_path = os.path.abspath(STAFF_PATH)
         log(f"STAFF_FILE_PATH path={staff_path}", "INFO")
@@ -1288,7 +1315,11 @@ def get_staff_list():
             if not cleaned or cleaned.startswith('#'):
                 continue
             staff.append(cleaned.lower())
-        log(f"STAFF_LOADED members={len(staff)} raw_lines={len(raw_lines)} path={staff_path}", "INFO")
+        log(
+            f"STAFF_LOADED members={len(staff)} raw_lines={len(raw_lines)} source=staff.txt "
+            f"path={staff_path}",
+            "INFO",
+        )
         return staff
     except Exception as e:
         log(f"STAFF_FILE_ERROR path={STAFF_PATH} error={e}", "ERROR")
