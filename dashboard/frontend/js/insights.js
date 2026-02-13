@@ -5,33 +5,19 @@ const LiveInsights = {
         if (!data || !data.summary) return;
 
         const summary = data.summary;
+        const nextName = summary.next_staff || '—';
 
-        // Active tickets
-        this._set('insight-active', summary.active_count || 0);
+        // Panel title
+        this._set('insight-panel-title', `Next Up: ${nextName}`);
 
-        // Completion rate (completions / processed * 100)
-        const processed = summary.processed_today || 0;
-        const completions = summary.completions_today || 0;
-        let rate = '—';
-        if (processed > 0) {
-            const pct = Math.round((completions / processed) * 100);
-            rate = `${pct}%`;
-        } else if (completions > 0) {
-            rate = `${completions} done`;
-        }
-        this._set('insight-completion-rate', rate);
+        // Find next staff member's KPIs
+        const kpi = (data.staff_kpis || []).find(s => s.name === nextName);
 
-        // Average response time
-        this._set('insight-avg-response', summary.avg_time_human || 'N/A');
-
-        // Next staff member
-        this._set('insight-next-staff', summary.next_staff || '—');
-
-        // Total processed (lifetime)
-        this._set('insight-total', summary.total_processed || '—');
-
-        // Uptime
-        this._set('insight-uptime', summary.uptime || '—');
+        // Per-staff metrics
+        this._set('insight-active', kpi ? kpi.active : '—');
+        this._set('insight-assigned', kpi ? kpi.assigned : '—');
+        this._set('insight-completed', kpi ? kpi.completed : '—');
+        this._set('insight-median', kpi?.median_human || '—');
     },
 
     _set(id, value) {

@@ -79,6 +79,14 @@ COMPLETION_FOOTER_TEMPLATE = (
     "please email {mailbox} and quote reference {ref}."
 )
 HEARTBEAT_INTERVAL_SECONDS = 300
+JIRA_FOLLOW_UP_FOLDER_PATH = "Inbox/06_JIRA_FOLLOW_UP"
+JIRA_FOLLOW_UP_SUBJECT_PREFIX = "[JIRA FOLLOW-UP] "
+JIRA_FOLLOW_UP_BANNER = (
+    "\u26A0 JIRA FOLLOW-UP REQUEST\n\n"
+    "A comment has been added in Jira indicating the transfer may not have completed correctly.\n\n"
+    "Please review the original job and verify transfer status before marking complete.\n\n"
+    "--- Original Jira Email Below ---\n\n"
+)
 
 # HIB routing and burst detection
 HIB_FOLDER_NAME = "04_HIB"
@@ -90,6 +98,7 @@ _staff_list_cache = None
 _safe_mode_cache = None
 _safe_mode_inbox = None
 _live_test_override = False
+_jira_followup_folder_error_logged = False
 
 # Hot-reloaded dashboard-managed config (last-known-good per file).
 _hot_config_state = {
@@ -290,6 +299,28 @@ def is_completion_subject(subject):
     if not subject:
         return False
     return COMPLETION_SUBJECT_KEYWORD.lower() in str(subject).lower()
+
+def is_jira_candidate(subject, body, sender):
+    subject_lower = (subject or "").lower()
+    body_lower = (body or "").lower()
+    sender_lower = (sender or "").lower()
+    return (
+        ("comment" in subject_lower)
+        or ("atlassian" in body_lower)
+        or ("view request" in body_lower)
+        or ("jira" in sender_lower)
+    )
+
+def is_jira_comment_email(body):
+    return "request comments:" in (body or "").lower()
+
+def build_completion_subject(base_subject, is_jira_followup=False):
+    subject_text = (base_subject or "").strip()
+    if is_completion_subject(subject_text):
+        return subject_text
+    if is_jira_followup:
+        return f"{COMPLETION_SUBJECT_KEYWORD}[JIRA] {subject_text}".strip()
+    return f"{COMPLETION_SUBJECT_PREFIX}{subject_text}".strip()
 
 def is_staff_completed_confirmation(sender_email, subject, staff_set):
     """Return True if sender is staff and subject contains [COMPLETED]."""
@@ -533,14 +564,14 @@ def build_completion_mailto_url(to_email, cc_email, subject, body=None):
     return base_url
 
 def inject_completion_hotlink(fwd, original_sender_email, original_subject, sami_inbox, mode_out=None, \
-        original_msg=None):
+        original_msg=None, is_jira_followup=False):
     if fwd is None:
         return False
     body_text, truncated = build_completion_mailto_body(original_msg)
     if body_text:
         log(f"COMPLETE_MAILTO_BODY len={len(body_text)} truncated={truncated}", "INFO")
     body_param = body_text or None
-    mailto_subject = f"{COMPLETION_SUBJECT_KEYWORD} {original_subject}".strip()
+    mailto_subject = build_completion_subject(original_subject, is_jira_followup=is_jira_followup)
     mailto_url = build_completion_mailto_url(
         original_sender_email,
         sami_inbox,
@@ -2365,6 +2396,7 @@ def process_inbox():
     effective_config["completed_folder"] = f"Inbox/{folders_cfg.get('completed', default_folders['completed'])}"
     effective_config["quarantine_folder"] = f"Inbox/{folders_cfg.get('quarantine', default_folders['quarantine'])}"
     effective_config["system_notification_folder"] = f"Inbox/{folders_cfg.get('system_notification', default_folders['system_notification'])}"
+    effective_config["jira_follow_up_folder"] = JIRA_FOLLOW_UP_FOLDER_PATH
 
     # Load domain policy
     domain_policy, policy_valid = load_domain_policy()
@@ -2386,7 +2418,7 @@ def process_inbox():
     effective_completion_cc = overrides.get("completion_cc_addr", COMPLETION_CC_ADDR) if overrides else COMPLETION_CC_ADDR
     if overrides and overrides.get("completion_cc_addr") and effective_completion_cc != COMPLETION_CC_ADDR:
         log("OVERRIDE_APPLIED key=completion_cc_addr", "INFO")
-    global _safe_mode_cache, _safe_mode_inbox, _live_test_override
+    global _safe_mode_cache, _safe_mode_inbox, _live_test_override, _jira_followup_folder_error_logged
     is_safe, safe_reason, override_active = determine_safe_mode(effective_config.get("inbox_folder", ""))
     _safe_mode_cache = (is_safe, safe_reason)
     _safe_mode_inbox = effective_config.get("inbox_folder", "")
@@ -2503,6 +2535,21 @@ def process_inbox():
                 log(f"FOLDER_RESOLVED kind=completed path={get_folder_path_safe(completed_dest)}", "INFO")
             else:
                 log(f"FOLDER_NOT_FOUND completed_folder={effective_config['completed_folder']}", "WARN")
+
+            jira_follow_up_folder = None
+            jira_follow_up_enabled = False
+            jira_follow_up_path = effective_config.get("jira_follow_up_folder", JIRA_FOLLOW_UP_FOLDER_PATH)
+            for _, root in root_candidates:
+                jira_follow_up_folder, _ = resolve_folder(root, jira_follow_up_path)
+                if jira_follow_up_folder:
+                    break
+            if jira_follow_up_folder:
+                jira_follow_up_enabled = True
+                log(f"FOLDER_RESOLVED kind=jira_follow_up path={get_folder_path_safe(jira_follow_up_folder)}", "INFO")
+            else:
+                if not _jira_followup_folder_error_logged:
+                    log(f"FOLDER_RESOLVE_FAIL kind=jira_follow_up path={jira_follow_up_path} feature=disabled", "ERROR")
+                    _jira_followup_folder_error_logged = True
 
             hib_folder = get_or_create_subfolder(inbox, HIB_FOLDER_NAME)
             if hib_folder:
@@ -2622,23 +2669,6 @@ def process_inbox():
                             log("MOVE_OK kind=quarantine", "INFO")
                         except Exception as e:
                             log(f"MOVE_FAIL kind=quarantine error={e}", "ERROR")
-                        continue
-
-                    if domain_bucket == "system_notification":
-                        log(f"ROUTE_SYSTEM_NOTIFICATION domain={sender_domain}", "WARN")
-                        if not system_notification_folder:
-                            log("ROUTE_SYSTEM_NOTIFICATION_FAIL reason=folder_missing", "ERROR")
-                            continue
-                        try:
-                            _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
-                            if not _sb_ok:
-                                log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
-                                continue
-                            msg.UnRead = False
-                            msg.Move(system_notification_folder)
-                            log("MOVE_OK kind=system_notification", "INFO")
-                        except Exception as e:
-                            log(f"MOVE_FAIL kind=system_notification error={e}", "ERROR")
                         continue
 
                     try:
@@ -2838,6 +2868,128 @@ def process_inbox():
                                 log(f"HIB_ROUTE_ERROR error={e}", "ERROR")
                         continue
 
+                    jira_candidate = is_jira_candidate(subject, body, sender_email)
+                    jira_comment_email = is_jira_comment_email(body)
+
+                    if jira_candidate and jira_comment_email:
+                        jira_followup_key = f"{message_key}::JIRA_FOLLOWUP"
+                        if jira_followup_key in processed_ledger:
+                            log(f"JIRA_FOLLOWUP_DUP_SKIP msg_key={message_key}", "WARN")
+                            skipped_count += 1
+                            continue
+                        try:
+                            if not jira_follow_up_enabled or not jira_follow_up_folder:
+                                log(f"JIRA_FOLLOWUP_FAIL msg_key={message_key} error=feature_disabled", "ERROR")
+                                errors_count += 1
+                                continue
+
+                            _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                            if not _sb_ok:
+                                log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+                                append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+                                continue
+
+                            msg.UnRead = False
+                            moved_msg = msg.Move(jira_follow_up_folder)
+                            jira_msg = moved_msg if moved_msg is not None else msg
+                            try:
+                                jira_msg.Importance = 2
+                            except Exception:
+                                pass
+
+                            assignee = get_next_staff()
+                            if not assignee:
+                                log(f"JIRA_FOLLOWUP_FAIL msg_key={message_key} error=no_staff_available", "ERROR")
+                                errors_count += 1
+                                continue
+
+                            fwd = jira_msg.Forward()
+                            fwd.Recipients.Add(assignee)
+                            fwd.Subject = f"{JIRA_FOLLOW_UP_SUBJECT_PREFIX}{subject_with_id}"
+                            fwd.Body = JIRA_FOLLOW_UP_BANNER + (fwd.Body or "")
+                            fwd.SentOnBehalfOfName = CONFIG["mailbox"]
+
+                            try:
+                                requester = sender_email.strip() if isinstance(sender_email, str) else ""
+                                if not requester or "@" not in requester:
+                                    requester = CONFIG["mailbox"]
+                                assignee_email = assignee if isinstance(assignee, str) else ""
+                                staff_set = {s.lower() for s in staff_list}
+                                if assignee_email.lower() not in staff_set:
+                                    skip_reason = "assignee_not_staff"
+                                else:
+                                    skip_reason = ""
+                                if skip_reason:
+                                    log(f"COMPLETION_HOTLINK_SKIPPED reason={skip_reason} msg_id={msg_id}", "INFO")
+                                else:
+                                    mode_out = []
+                                    injected = inject_completion_hotlink(
+                                        fwd,
+                                        requester,
+                                        subject_with_id,
+                                        SAMI_SHARED_INBOX,
+                                        mode_out,
+                                        original_msg=jira_msg,
+                                        is_jira_followup=True,
+                                    )
+                                    if injected:
+                                        mode = mode_out[0] if mode_out else "HTML"
+                                        log(f"COMPLETION_HOTLINK_ADDED mode={mode} msg_id={msg_id}", "INFO")
+                                    else:
+                                        log(f"COMPLETION_HOTLINK_SKIPPED reason=inject_failed msg_id={msg_id}", "WARN")
+                            except Exception:
+                                log("COMPLETION_HOTLINK_FAIL", "WARN")
+
+                            is_safe, safe_reason = is_safe_mode()
+                            if is_safe:
+                                log(f"SAFE_MODE_SUPPRESS_SEND action=JIRA_FOLLOWUP bucket={domain_bucket} assignee={assignee} reason={safe_reason}", "WARN")
+                            else:
+                                fwd.Send()
+
+                            assigned_now = datetime.now().isoformat()
+                            processed_ledger[message_key] = {
+                                "ts": assigned_now,
+                                "assigned_to": assignee,
+                                "risk": "normal",
+                                "route": "JIRA_FOLLOWUP"
+                            }
+                            if identity.get("entry_id"):
+                                processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
+                            if identity.get("store_id"):
+                                processed_ledger[message_key]["store_id"] = identity.get("store_id")
+                            if identity.get("internet_message_id"):
+                                processed_ledger[message_key]["internet_message_id"] = identity.get("internet_message_id")
+                            if conversation_id:
+                                processed_ledger[message_key]["conversation_id"] = conversation_id
+                            processed_ledger[jira_followup_key] = {
+                                "ts": assigned_now,
+                                "assigned_to": assignee,
+                                "route": "JIRA_FOLLOWUP",
+                                "msg_key": message_key
+                            }
+                            if not save_processed_ledger(processed_ledger):
+                                log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                                errors_count += 1
+                                continue
+                            append_stats(
+                                subject,
+                                assignee,
+                                sender_email,
+                                "normal",
+                                domain_bucket,
+                                "JIRA_FOLLOWUP",
+                                policy_source,
+                                event_type="JIRA_FOLLOWUP_ASSIGNED",
+                                msg_key=message_key,
+                                status_after="jira_follow_up",
+                                assigned_ts=assigned_now,
+                            )
+                            processed_count += 1
+                        except Exception as e:
+                            log(f"JIRA_FOLLOWUP_FAIL msg_key={message_key} error={e}", "ERROR")
+                            errors_count += 1
+                        continue
+
                     # ===== COMPLETION DETECTION =====
                     try:
                         staff_sender_flag = sender_email in staff_list
@@ -2863,9 +3015,9 @@ def process_inbox():
                                     policy_source
                                 )
                                 if not save_processed_ledger(processed_ledger):
-                                    log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
-                                    log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
-                                    return
+                                    log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                                    errors_count += 1
+                                    continue
                                 msg.UnRead = False
                                 _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
                                 if not _sb_ok:
@@ -2894,9 +3046,9 @@ def process_inbox():
                                     processed_ledger[message_key]["conversation_id"] = conversation_id
                                 append_stats(subject, "completed", sender_email, "normal", domain_bucket, "STAFF_COMPLETED_CONFIRMATION", policy_source, event_type="COMPLETED", msg_key=message_key)
                                 if not save_processed_ledger(processed_ledger):
-                                    log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
-                                    log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
-                                    return
+                                    log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                                    errors_count += 1
+                                    continue
                                 msg.UnRead = False
                                 _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
                                 if not _sb_ok:
@@ -2925,9 +3077,9 @@ def process_inbox():
                             else:
                                 append_stats(subject, "completed", sender_email, "COMPLETION_UNMATCHED", domain_bucket, "COMPLETION_UNMATCHED", policy_source, event_type="COMPLETED")
                             if not save_processed_ledger(processed_ledger):
-                                log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
-                                log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
-                                return
+                                log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                                errors_count += 1
+                                continue
                             msg.UnRead = False
                             _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
                             if not _sb_ok:
@@ -2972,9 +3124,9 @@ def process_inbox():
                         if conversation_id:
                             processed_ledger[message_key]["conversation_id"] = conversation_id
                         if not save_processed_ledger(processed_ledger):
-                            log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
-                            log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
-                            return
+                            log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                            errors_count += 1
+                            continue
                         msg.UnRead = False
                         _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
                         if not _sb_ok:
@@ -3004,9 +3156,9 @@ def process_inbox():
                         if conversation_id:
                             processed_ledger[message_key]["conversation_id"] = conversation_id
                         if not save_processed_ledger(processed_ledger):
-                            log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
-                            log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
-                            return
+                            log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                            errors_count += 1
+                            continue
                         msg.UnRead = False
                         _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
                         if not _sb_ok:
@@ -3039,9 +3191,9 @@ def process_inbox():
                         if conversation_id:
                             processed_ledger[message_key]["conversation_id"] = conversation_id
                         if not save_processed_ledger(processed_ledger):
-                            log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
-                            log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
-                            return
+                            log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                            errors_count += 1
+                            continue
                         try:
                             msg.UnRead = False
                             _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
@@ -3188,9 +3340,9 @@ def process_inbox():
                         if conversation_id:
                             processed_ledger[message_key]["conversation_id"] = conversation_id
                         if not save_processed_ledger(processed_ledger):
-                            log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
-                            log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
-                            return
+                            log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                            errors_count += 1
+                            continue
                         processed_count += 1
                         continue
 
@@ -3220,9 +3372,9 @@ def process_inbox():
                     if conversation_id:
                         processed_ledger[message_key]["conversation_id"] = conversation_id
                     if not save_processed_ledger(processed_ledger):
-                        log("STATE_WRITE_FAIL_SKIP state=processed_ledger", "ERROR")
-                        log(f"TICK_SKIP tick_id={tick_id} reason=STATE_WRITE_FAIL", "ERROR")
-                        return
+                        log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                        errors_count += 1
+                        continue
 
                     if action_taken == "SYSTEM_NOTIFICATION" and is_jones_completion_notification(msg):
                         log("FILTER_JONES_COMPLETION action=move_processed", "INFO")
