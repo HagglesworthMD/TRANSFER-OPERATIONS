@@ -373,13 +373,12 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     processed = len([e for e in filtered if e["event_type"] == "ASSIGNED"])
     completions = len([e for e in filtered if e["event_type"] == "COMPLETED"])
 
-    # Build active count from ALL events (not date-filtered) so we track
-    # truly open tickets regardless of when they were assigned.
+    # Build active count from filtered events to match date range
     # Use count-based approach (msg_keys differ between ASSIGNED/COMPLETED).
     total_assigned_by_staff: dict[str, int] = defaultdict(int)
     total_completed_by_staff: dict[str, int] = defaultdict(int)
 
-    for e in events:
+    for e in filtered:
         if e["event_type"] == "ASSIGNED":
             email = (e.get("assigned_to") or "").strip().lower()
             if _is_staff(email):
@@ -397,11 +396,71 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
 
     active_staff = len(staff_list) if staff_list else 0
 
-    # Avg completion time
-    durations = [
-        e["duration_sec"] for e in filtered
-        if e["event_type"] == "COMPLETED" and e["duration_sec"] is not None
-    ]
+    # Avg completion time — infer durations via per-staff FIFO queues
+    # (mirrors _compute_staff_kpis logic: match each COMPLETED to the
+    #  earliest unmatched ASSIGNED for the same staff member)
+    _avg_staff_queues: dict[str, list[datetime]] = defaultdict(list)
+    for e in events:
+        if e["event_type"] != "ASSIGNED":
+            continue
+        email = (e.get("assigned_to") or "").strip().lower()
+        if not _is_staff(email):
+            continue
+        ts = e.get("assigned_ts") or e.get("event_ts")
+        if ts:
+            _avg_staff_queues[email].append(ts)
+    for q in _avg_staff_queues.values():
+        q.sort()
+
+    # Pre-consume queue with completions before the filtered date range
+    if ds and ds > "2000-01-01":
+        range_start_dt = _parse_ts(f"{ds}T00:00:00")
+        for e in events:
+            if e["event_type"] != "COMPLETED":
+                continue
+            if (e.get("date") or "") >= ds:
+                continue
+            email = (e.get("assigned_to") or "").strip().lower()
+            if not _is_staff(email):
+                sender = (e.get("sender") or "").strip().lower()
+                email = sender if _is_staff(sender) else ""
+            if not email or not _avg_staff_queues.get(email):
+                continue
+            if range_start_dt and _avg_staff_queues[email][0] >= range_start_dt:
+                continue
+            _avg_staff_queues[email].pop(0)
+
+    durations = []
+    for e in filtered:
+        if e["event_type"] != "COMPLETED":
+            continue
+
+        # Try explicit duration_sec first
+        if e["duration_sec"] is not None and e["duration_sec"] > 0:
+            durations.append(e["duration_sec"])
+            continue
+
+        # Resolve staff email for this completion
+        email = (e.get("assigned_to") or "").strip().lower()
+        if not _is_staff(email):
+            sender = (e.get("sender") or "").strip().lower()
+            email = sender if _is_staff(sender) else ""
+
+        completed_ts = e.get("completed_ts") or e.get("event_ts")
+        if not email or not completed_ts or not _avg_staff_queues.get(email):
+            continue
+
+        # Pop earliest ASSIGNED timestamp that precedes this completion
+        while _avg_staff_queues[email]:
+            a_ts = _avg_staff_queues[email][0]
+            if a_ts >= completed_ts:
+                break
+            _avg_staff_queues[email].pop(0)
+            delta = _business_seconds(a_ts, completed_ts)
+            if 0 < delta <= _BH_DAY_SEC * 10:
+                durations.append(delta)
+                break
+
     avg_time_sec = sum(durations) / len(durations) if durations else 0
 
     # Uptime: find earliest HEARTBEAT in raw rows for today
@@ -447,7 +506,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
         "active_count": active_count,
         "active_staff": active_staff,
         "avg_time_sec": round(avg_time_sec, 1),
-        "avg_time_human": format_duration_human(avg_time_sec) if avg_time_sec else "N/A",
+        "avg_time_human": format_duration_human(avg_time_sec) if durations else "N/A",
         "uptime": uptime_str,
         "total_processed": total_processed,
         "next_staff": next_staff,
@@ -708,7 +767,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     for email in sorted(all_emails):
         assigned = staff_assigned.get(email, 0)
         completed = staff_completed.get(email, 0)
-        active = max(0, staff_all_assigned.get(email, 0) - staff_all_completed.get(email, 0))
+        active = max(0, assigned - completed)
 
         durations_min = sorted([d / 60.0 for d in staff_durations.get(email, [])])
         median_min = round(_median(durations_min), 1) if durations_min else None

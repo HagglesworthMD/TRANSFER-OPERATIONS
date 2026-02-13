@@ -9,6 +9,25 @@ const Charts = {
         '#26c6da', '#ff7043', '#8d6e63', '#78909c', '#5c6bc0',
     ],
 
+    // Easter egg: Greek flag stripe pattern for John
+    _greekFlagPattern: null,
+    _getGreekFlag() {
+        if (this._greekFlagPattern) return this._greekFlagPattern;
+        const c = document.createElement('canvas');
+        const stripes = 9, h = 4;          // 9 stripes, 4px each
+        c.width = 36; c.height = stripes * h;
+        const ctx = c.getContext('2d');
+        for (let i = 0; i < stripes; i++) {
+            ctx.fillStyle = i % 2 === 0 ? '#0D5EAF' : '#FFFFFF';
+            ctx.fillRect(0, i * h, c.width, h);
+        }
+        this._greekFlagPattern = ctx.createPattern(c, 'repeat');
+        return this._greekFlagPattern;
+    },
+    _staffColors: {
+        'John Drousas': 'greek-flag',
+    },
+
     _riskColors: {
         critical: '#ef5350',
         urgent: '#ffca28',
@@ -203,7 +222,11 @@ const Charts = {
         const values = Object.values(dist);
         const colors = colorMap
             ? labels.map(l => colorMap[l] || '#78909c')
-            : labels.map((_, i) => this._colors[i % this._colors.length]);
+            : labels.map((l, i) => {
+                const sc = this._staffColors[l];
+                if (sc === 'greek-flag') return this._getGreekFlag();
+                return sc || this._colors[i % this._colors.length];
+            });
         const borderColor = this._getCssVar('--chart-border', 'rgba(15, 25, 35, 0.8)');
 
         if (this._instances[id]) {
