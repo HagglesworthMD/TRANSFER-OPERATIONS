@@ -45,19 +45,43 @@ const Charts = {
     },
 
     _hourlyDetail: null,
+    _hourlyMode: 'source',
+    _hourlyData: null,
 
     update(data) {
         if (!data) return;
+        this._hourlyData = data;
         if (data.hourly_detail) {
             this._hourlyDetail = data.hourly_detail;
-            this._updateHourlyStacked(data.hourly_detail);
-        } else {
-            this._updateHourlyLegacy(data.hourly);
         }
+        this._renderHourlyChart();
         this._updateDoughnut('chart-assignment-pie', data.assignment_pie, 'Assignments');
         this._updateDoughnut('chart-risk', data.risk_distribution, 'Risk Levels', this._riskColors);
         this._updateDoughnut('chart-domain', data.domain_distribution, 'Domains');
         this._updateDoughnut('chart-requestor', data.requestor_distribution, 'Requestors');
+    },
+
+    _renderHourlyChart() {
+        if (this._hourlyMode === 'source' && this._hourlyDetail) {
+            this._updateHourlyStacked(this._hourlyDetail);
+        } else if (this._hourlyData && this._hourlyData.hourly) {
+            this._updateHourlyLegacy(this._hourlyData.hourly);
+        }
+    },
+
+    initToggle() {
+        const btn = document.getElementById('hourly-toggle');
+        if (!btn) return;
+        const self = this;
+        btn.addEventListener('click', () => {
+            self._hourlyMode = self._hourlyMode === 'source' ? 'status' : 'source';
+            btn.textContent = self._hourlyMode === 'source' ? 'By Source' : 'By Status';
+            if (self._instances['chart-hourly']) {
+                self._instances['chart-hourly'].destroy();
+                delete self._instances['chart-hourly'];
+            }
+            self._renderHourlyChart();
+        });
     },
 
     applyTheme() {
@@ -65,7 +89,7 @@ const Charts = {
             if (!chart) return;
 
             if (chart.config.type === 'bar') {
-                if (this._hourlyDetail) {
+                if (this._hourlyMode === 'source' && this._hourlyDetail) {
                     // Stacked chart — rebuild datasets with new theme colors
                     this._updateHourlyStacked(this._hourlyDetail);
                 } else {
@@ -153,7 +177,7 @@ const Charts = {
     _updateHourlyLegacy(hourly) {
         if (!hourly) return;
         const id = 'chart-hourly';
-        const labels = Object.keys(hourly);
+        const labels = Object.keys(hourly).sort();
         const assignedData = labels.map(k => hourly[k].assigned);
         const completedData = labels.map(k => hourly[k].completed);
         const barColors = this._barDatasetColors();
@@ -187,6 +211,7 @@ const Charts = {
         const ctx = document.getElementById(id);
         if (!ctx) return;
 
+        const self = this;
         this._instances[id] = new Chart(ctx, {
             type: 'bar',
             data: {
@@ -211,6 +236,17 @@ const Charts = {
                 ],
             },
             options: this._barOptions(),
+        });
+
+        // Click handler — dispatch custom event with clicked hour
+        ctx.addEventListener('click', (evt) => {
+            const chart = self._instances[id];
+            if (!chart) return;
+            const points = chart.getElementsAtEventForMode(evt, 'index', { intersect: false }, false);
+            if (points.length > 0) {
+                const hour = chart.data.labels[points[0].index];
+                document.dispatchEvent(new CustomEvent('hourly-bar-click', { detail: { hour } }));
+            }
         });
     },
 
@@ -274,7 +310,7 @@ const Charts = {
             plugins: {
                 legend: {
                     position: 'top',
-                    labels: { color: this._getCssVar('--chart-label', '#f4f8ff'), font: { size: 12 } },
+                    labels: { color: this._getCssVar('--chart-label', '#ffffff'), font: { size: 13, weight: '500' } },
                 },
                 tooltip: {
                     backgroundColor: this._getCssVar('--chart-tooltip-bg', 'rgba(10, 16, 24, 0.96)'),
@@ -330,8 +366,8 @@ const Charts = {
                 legend: {
                     position: 'bottom',
                     labels: {
-                        color: this._getCssVar('--chart-label', '#f4f8ff'),
-                        font: { size: 12 },
+                        color: this._getCssVar('--chart-label', '#ffffff'),
+                        font: { size: 13, weight: '500' },
                         padding: 12,
                         boxWidth: 12,
                         usePointStyle: true,
@@ -340,11 +376,13 @@ const Charts = {
                             const data = chart.data;
                             if (!data.labels.length) return [];
                             const total = data.datasets[0].data.reduce((a, b) => a + b, 0);
+                            const labelColor = getComputedStyle(document.documentElement).getPropertyValue('--chart-label').trim() || '#ffffff';
                             return data.labels.map((label, i) => {
                                 const val = data.datasets[0].data[i];
                                 const pct = total > 0 ? ((val / total) * 100).toFixed(1) : '0.0';
                                 return {
                                     text: `${label} (${pct}%)`,
+                                    fontColor: labelColor,
                                     fillStyle: data.datasets[0].backgroundColor[i],
                                     strokeStyle: data.datasets[0].borderColor || 'transparent',
                                     lineWidth: 0,

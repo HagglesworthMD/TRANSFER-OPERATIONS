@@ -27,7 +27,7 @@
     --scroll-thumb: rgba(255, 255, 255, 0.1);
     --scroll-thumb-hover: rgba(255, 255, 255, 0.2);
     --calendar-filter: invert(0.92) brightness(0.95);
-    --chart-label: #f4f8ff;
+    --chart-label: #ffffff;
     --chart-tick: #eef3f8;
     --chart-grid-x: rgba(255, 255, 255, 0.03);
     --chart-grid-y: rgba(255, 255, 255, 0.05);
@@ -349,6 +349,22 @@ body {
     background: var(--accent-blue);
     border-color: var(--accent-blue);
     color: #fff;
+}
+
+.btn-toggle {
+    padding: 5px 14px;
+    border: 1px solid var(--border-soft);
+    border-radius: 16px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.btn-toggle:hover {
+    border-color: var(--accent-blue);
+    color: var(--accent-blue);
 }
 
 .range-label {

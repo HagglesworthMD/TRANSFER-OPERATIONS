@@ -71,7 +71,7 @@
         <!-- Summary Cards Row -->
         <section class="summary-row" id="summary-cards">
             <div class="card summary-card" data-key="processed_today">
-                <div class="card-label">Processed</div>
+                <div class="card-label">Processed <span class="tooltip-icon" title="Total emails processed by SAMI — includes imaging transfer requests, system notifications, quarantined items, and other non-imaging emails. Not all processed items result in a staff completion.">?</span></div>
                 <div class="card-value" id="card-processed">—</div>
             </div>
             <div class="card summary-card" data-key="completions_today">
@@ -136,7 +136,10 @@
         <!-- Chart Row: Hourly + Risk/Domain -->
         <section class="chart-row">
             <div class="card panel-large">
-                <h2 class="panel-title">Hourly Activity (Today)</h2>
+                <h2 class="panel-title" id="hourly-title">Hourly Activity (Today)</h2>
+                <div style="text-align:right;margin:-0.5rem 0 0.25rem;">
+                    <button id="hourly-toggle" class="btn-toggle" title="Switch chart view">By Source</button>
+                </div>
                 <div class="chart-container chart-wide">
                     <canvas id="chart-hourly"></canvas>
                 </div>

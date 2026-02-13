@@ -820,6 +820,13 @@ def _compute_hourly_detail(events: list[dict]) -> dict[str, Any]:
         key = f"{h:02d}:00"
         hours[key] = {"sources": {}, "events": [], "total": 0}
 
+    # Build msg_key → staff lookup from ASSIGNED events so COMPLETED
+    # events can show who originally handled the request.
+    assigned_staff: dict[str, str] = {}
+    for e in events:
+        if e["event_type"] == "ASSIGNED" and _is_staff(e.get("assigned_to", "")) and e.get("msg_key"):
+            assigned_staff[e["msg_key"]] = e["assigned_to"]
+
     for e in events:
         ts = e.get("event_ts")
         if not ts:
@@ -830,14 +837,27 @@ def _compute_hourly_detail(events: list[dict]) -> dict[str, Any]:
         key = f"{ts.hour:02d}:00"
         sender = e.get("sender", "") or ""
         source = _sender_display_name(sender)
-        all_sources.add(source)
 
         bucket = hours[key]
-        bucket["sources"][source] = bucket["sources"].get(source, 0) + 1
-        bucket["total"] += 1
+
+        # Source counts only for ASSIGNED (drives the stacked chart)
+        if e["event_type"] == "ASSIGNED":
+            all_sources.add(source)
+            bucket["sources"][source] = bucket["sources"].get(source, 0) + 1
+            bucket["total"] += 1
 
         # Resolve staff display name
-        staff_email = e.get("assigned_to", "")
+        staff_email = (e.get("assigned_to") or "").strip().lower()
+        if e["event_type"] == "COMPLETED" and not _is_staff(staff_email):
+            # Try msg_key lookup to find original assignee
+            msg_key = e.get("msg_key") or ""
+            if msg_key:
+                staff_email = assigned_staff.get(msg_key, staff_email)
+            # Fall back to sender (COMPLETED rows often have staff as sender)
+            if not _is_staff(staff_email):
+                sender_email = (e.get("sender") or "").strip().lower()
+                if _is_staff(sender_email):
+                    staff_email = sender_email
         staff_name = _staff_display_name(staff_email) if _is_staff(staff_email) else staff_email
 
         bucket["events"].append({

@@ -14,6 +14,7 @@ const App = {
         ActivityFeed.init();
         HourlyDetail.init();
         this._initDateControls();
+        Charts.initToggle();
 
         // Keyboard shortcut: R to force refresh
         document.addEventListener('keydown', (e) => {
@@ -94,6 +95,9 @@ const App = {
                 btn.classList.add('active');
 
                 const preset = btn.dataset.preset;
+                const titleMap = { 'today': 'Today', '7d': 'Last 7 Days', '30d': 'Last 30 Days', 'all': 'All Time' };
+                const titleEl = document.getElementById('hourly-title');
+                if (titleEl) titleEl.textContent = `Hourly Activity (${titleMap[preset] || preset})`;
                 const todayDate = new Date();
                 const todayStr = this._getLocalDateString(todayDate);
 
