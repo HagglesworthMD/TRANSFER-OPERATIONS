@@ -3396,16 +3396,12 @@ def process_inbox():
                             log(f"INTERNAL_QUERY domain={sender_domain}", "INFO")
 
                     elif domain_bucket == "system_notification":
-                        # Class 3: System notifications - To apps, CC manager, no assignment
+                        # Class 3: System notifications - silent move, no email
                         action_taken = "SYSTEM_NOTIFICATION"
                         assignee = "system_notification"
-                        cc_manager = True
+                        cc_manager = False
                         cc_apps = False
-                        # Apps specialists as To recipients
-                        for apps_email in policy_apps_specialists:
-                            hold_recipients.append(apps_email)
-                        # Manager will be added as CC via cc_manager flag
-                        log(f"SYSTEM_NOTIFICATION domain={sender_domain} to_apps={len(policy_apps_specialists)} cc_manager=True", "WARN")
+                        log(f"SYSTEM_NOTIFICATION domain={sender_domain} silent_move=True", "INFO")
 
                     elif domain_bucket in ("unknown", "hold"):
                         # Unknown domain: To manager, no CC
@@ -3492,8 +3488,12 @@ def process_inbox():
                         errors_count += 1
                         continue
 
-                    if action_taken == "SYSTEM_NOTIFICATION" and is_jones_completion_notification(msg):
-                        log("FILTER_JONES_COMPLETION action=move_processed", "INFO")
+                    if domain_bucket == "system_notification":
+                        # Silent move to system_notification folder — no email sent
+                        if is_jones_completion_notification(msg):
+                            log("FILTER_JONES_COMPLETION action=move_processed", "INFO")
+                        else:
+                            log(f"SYSTEM_NOTIFICATION_SILENT_MOVE domain={sender_domain}", "INFO")
                         append_stats(subject, assignee, sender_email, risk_level, domain_bucket, action_taken, policy_source)
                         msg.UnRead = False
                         _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
@@ -3501,7 +3501,10 @@ def process_inbox():
                             log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
                             append_stats(subject, "skipped", sender_email, risk_level, domain_bucket, "WRONG_MAILBOX", policy_source)
                         else:
-                            msg.Move(processed)
+                            if system_notification_folder:
+                                msg.Move(system_notification_folder)
+                            else:
+                                msg.Move(processed)
                         processed_count += 1
                         continue
                     # Forward email
