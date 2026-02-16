@@ -1664,17 +1664,17 @@ def classify_sender(sender_email, sender_domain, policy):
       3. system_notification (sender, then domain)
       4. external_image_request (sender, then domain)
     """
-    email_lower = sender_email.lower().strip() if sender_email else ""
+    email_lower = normalize_sender_for_policy(sender_email) or ""
     domain_lower = sender_domain.lower().strip() if sender_domain else ""
 
     # Build sets for O(1) membership (lists stored in JSON, sets built at runtime)
-    q_senders = set(policy.get("quarantine_senders", []))
+    q_senders = _build_sender_override_set(policy, "quarantine_senders")
     q_domains = set(d.lower().strip() for d in policy.get("quarantine_domains", []))
-    h_senders = set(policy.get("held_senders", []))
+    h_senders = _build_sender_override_set(policy, "held_senders")
     h_domains = set(d.lower().strip() for d in policy.get("held_domains", []))
-    sn_senders = set(policy.get("system_notification_senders", []))
+    sn_senders = _build_sender_override_set(policy, "system_notification_senders")
     sn_domains = set(d.lower().strip() for d in policy.get("system_notification_domains", []))
-    eir_senders = set(policy.get("transfer_senders", []))
+    eir_senders = _build_sender_override_set(policy, "transfer_senders")
     eir_domains = set(d.lower().strip() for d in policy.get("transfer_domains", []))
 
     # 1. Quarantine
@@ -1704,6 +1704,54 @@ def classify_sender(sender_email, sender_domain, policy):
     # No explicit policy match
     return None, None
 
+
+
+
+def normalize_sender_for_policy(raw):
+    """Normalize sender strings for exact override matching."""
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip().lower()
+    if not s:
+        return None
+    if s.startswith("smtp:"):
+        s = s[5:].strip()
+    match = re.search(r"<([^>]+)>", s)
+    if match:
+        s = match.group(1).strip()
+    if "@" not in s:
+        fallback = re.search(r"[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}", s)
+        if fallback:
+            s = fallback.group(0).strip()
+    return normalize_email(s)
+
+
+def _build_sender_override_set(policy, key):
+    values = policy.get(key, []) if isinstance(policy, dict) else []
+    if not isinstance(values, list):
+        return set()
+    result = set()
+    for item in values:
+        norm = normalize_sender_for_policy(item)
+        if norm:
+            result.add(norm)
+    return result
+
+
+def get_sender_override_bucket(sender_email, policy):
+    """Return sender override bucket for this sender, or None if no override."""
+    email_lower = normalize_sender_for_policy(sender_email)
+    if not email_lower:
+        return None
+    if email_lower in _build_sender_override_set(policy, "quarantine_senders"):
+        return "quarantine"
+    if email_lower in _build_sender_override_set(policy, "held_senders"):
+        return "hold"
+    if email_lower in _build_sender_override_set(policy, "system_notification_senders"):
+        return "system_notification"
+    if email_lower in _build_sender_override_set(policy, "transfer_senders"):
+        return "external_image_request"
+    return None
 
 # Superseded by classify_sender() for process_inbox routing — kept for backward compatibility.
 def classify_sender_domain(domain, policy):
@@ -2757,6 +2805,12 @@ def process_inbox():
                             match_level = "domain"
                         else:
                             match_level = None
+                    # Safety: if sender override matches, always treat it as explicit sender match.
+                    if match_level != "sender":
+                        sender_bucket = get_sender_override_bucket(sender_email, domain_policy)
+                        if sender_bucket:
+                            domain_bucket = sender_bucket
+                            match_level = "sender"
 
                     if match_level == "sender":
                         log(f"POLICY_MATCH level=sender bucket={domain_bucket} sender={sender_email}", "INFO")
@@ -2878,6 +2932,8 @@ def process_inbox():
                             continue
                     # Internal staff guard - skip round-robin but allow completion
                     sender_override_matched = (match_level == "sender")
+                    if sender_override_matched and is_internal_sender(sender_email) and (not is_staff_sender(sender_email, staff_list)):
+                        log(f"INTERNAL_NON_STAFF_BYPASS reason=sender_override sender={sender_email} bucket={domain_bucket}", "INFO")
                     if (not sender_override_matched) and is_internal_sender(sender_email) and is_staff_sender(sender_email, staff_list):
                         if not is_completion_subject(subject):
                             log(f"INTERNAL_STAFF_EMAIL skip_new_job sender={sender_email}", "INFO")
