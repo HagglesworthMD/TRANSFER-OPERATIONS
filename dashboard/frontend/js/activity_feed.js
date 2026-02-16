@@ -57,6 +57,11 @@ const ActivityFeed = {
             });
         }
 
+        const reconcileAllBtn = document.getElementById('reconcile-all-btn');
+        if (reconcileAllBtn) {
+            reconcileAllBtn.addEventListener('click', () => this._reconcileAll());
+        }
+
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 this._closeActiveModal();
@@ -192,6 +197,37 @@ const ActivityFeed = {
                 }
             });
         });
+    },
+
+    async _reconcileAll() {
+        const count = this._activeRows ? this._activeRows.length : 0;
+        if (count === 0) {
+            alert('No active tickets to reconcile.');
+            return;
+        }
+        if (!confirm(`Reconcile all ${count} active tickets? This will zero out the active count for the current date range.`)) {
+            return;
+        }
+        const reason = prompt('Reason (optional):', 'Bulk reconcile — balanced');
+        if (reason === null) return; // cancelled
+
+        const btn = document.getElementById('reconcile-all-btn');
+        if (btn) { btn.disabled = true; btn.textContent = 'Reconciling...'; }
+
+        try {
+            const params = this._activeParams || this._currentDateParams();
+            const result = await DashboardAPI.reconcileAll(
+                params?.dateStart, params?.dateEnd, params?.staff, reason || 'Bulk reconcile'
+            );
+            await this._openActiveModal();
+            if (typeof App !== 'undefined' && typeof App.refresh === 'function') {
+                App.refresh();
+            }
+        } catch (err) {
+            alert('Failed to reconcile all: ' + err.message);
+        } finally {
+            if (btn) { btn.disabled = false; btn.textContent = 'Reconcile All'; }
+        }
     },
 
     _renderReconciledSection(entries) {

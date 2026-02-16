@@ -124,6 +124,32 @@ def add_reconciled(entry: dict) -> tuple[bool, str | None]:
     return _atomic_write_json(config.RECONCILED_JSON, state)
 
 
+def add_reconciled_bulk(entries: list[dict]) -> tuple[bool, str | None]:
+    """Add multiple reconciled entries at once. Atomic write."""
+    if not entries:
+        return True, None
+
+    state = load_reconciled()
+    ts = datetime.now(timezone.utc).isoformat()
+
+    # Build set of new identities for fast dedup
+    new_ids = {e["identity"] for e in entries if e.get("identity")}
+    # Remove existing entries that will be replaced
+    state["reconciled"] = [
+        e for e in state["reconciled"]
+        if not (isinstance(e, dict) and e.get("identity") in new_ids)
+    ]
+    # Append all new entries
+    for entry in entries:
+        if not entry.get("identity"):
+            continue
+        if "ts" not in entry:
+            entry["ts"] = ts
+        state["reconciled"].append(entry)
+
+    return _atomic_write_json(config.RECONCILED_JSON, state)
+
+
 def remove_reconciled(identity: str) -> tuple[bool, str | None]:
     """Remove a reconciled entry by identity. Atomic write."""
     if not identity:

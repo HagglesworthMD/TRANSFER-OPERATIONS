@@ -19,7 +19,7 @@ from pydantic import BaseModel
 from . import config
 from .data_reader import get_file_info, load_csv, load_json
 from .kpi_engine import compute_dashboard, export_active_events, export_staff_events
-from .reconciliation import load_reconciled, load_reconciled_set, add_reconciled, remove_reconciled
+from .reconciliation import load_reconciled, load_reconciled_set, add_reconciled, add_reconciled_bulk, remove_reconciled
 
 logging.basicConfig(
     level=logging.INFO,
@@ -722,6 +722,56 @@ async def reconcile_remove(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to update reconciliation: {err}")
 
     return {"ok": True, "identity": identity}
+
+
+@app.post("/api/reconcile/all")
+async def reconcile_all(request: Request):
+    """Reconcile all currently active items (bulk). Zeroes out active count."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    reason = (body.get("reason") or "Reconcile all").strip()
+
+    rows, _ = load_csv(config.DAILY_STATS_CSV)
+    from datetime import datetime as _dt, timezone as _tz
+    today = _dt.now().strftime("%Y-%m-%d")
+    ds = body.get("date_start") or today
+    de = body.get("date_end") or today
+    staff_filter = body.get("staff") or None
+
+    # Get current active rows (unfiltered by reconciliation)
+    active = export_active_events(rows, ds, de, staff_name=staff_filter)
+
+    ts = _dt.now(_tz.utc).isoformat()
+    entries = []
+    for r in active:
+        identity = r.get("Identity", "")
+        if not identity:
+            continue
+        entry = {
+            "identity": identity,
+            "staff_email": (r.get("Staff Email") or "").strip().lower(),
+            "reason": reason,
+            "ts": ts,
+        }
+        sami = r.get("SAMI Ref", "")
+        if sami:
+            entry["sami_ref"] = sami
+        msg_key = r.get("Message Key", "")
+        if msg_key:
+            entry["msg_key_norm"] = msg_key
+        entries.append(entry)
+
+    if not entries:
+        return {"ok": True, "count": 0}
+
+    ok, err = add_reconciled_bulk(entries)
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Failed to bulk reconcile: {err}")
+
+    return {"ok": True, "count": len(entries)}
 
 
 @app.get("/api/config/domain_policy")

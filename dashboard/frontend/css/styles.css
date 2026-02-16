@@ -1345,6 +1345,29 @@ body {
 .btn-reconcile:hover {
     background: rgba(255, 152, 0, 0.3);
 }
+
+.btn-reconcile-all {
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    border: 1px solid rgba(255, 152, 0, 0.4);
+    border-radius: 4px;
+    background: rgba(255, 152, 0, 0.2);
+    color: #ffb74d;
+    cursor: pointer;
+    font-weight: 600;
+}
+.btn-reconcile-all:hover {
+    background: rgba(255, 152, 0, 0.35);
+}
+.btn-reconcile-all:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+:root[data-theme='light'] .btn-reconcile-all {
+    background: rgba(255, 152, 0, 0.12);
+    color: #e65100;
+    border-color: rgba(255, 152, 0, 0.3);
+}
 .btn-reconcile:disabled {
     opacity: 0.5;
     cursor: default;

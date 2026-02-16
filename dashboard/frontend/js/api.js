@@ -188,6 +188,21 @@ const DashboardAPI = {
         return data;
     },
 
+    async reconcileAll(dateStart, dateEnd, staff, reason) {
+        const body = { reason: reason || 'Reconcile all' };
+        if (dateStart) body.date_start = dateStart;
+        if (dateEnd) body.date_end = dateEnd;
+        if (staff) body.staff = staff;
+        const res = await fetch(`${this.base}/api/reconcile/all`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to reconcile all');
+        return data;
+    },
+
     async removeReconcile(identity) {
         const res = await fetch(`${this.base}/api/reconcile/remove`, {
             method: 'POST',
