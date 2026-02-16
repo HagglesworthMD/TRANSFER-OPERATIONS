@@ -4,6 +4,7 @@ Ported from dashboard_core.py: prepare_event_frame, compute_per_staff_kpis,
 format_duration_human, plus new helpers for charts/feeds.
 """
 
+import bisect
 import logging
 import math
 import re
@@ -88,6 +89,24 @@ def _median(vals: list[float]) -> float:
 _BH_START_H, _BH_START_M = 8, 30   # 08:30
 _BH_END_H,   _BH_END_M   = 17, 0  # 17:00
 _BH_DAY_SEC = ((_BH_END_H * 60 + _BH_END_M) - (_BH_START_H * 60 + _BH_START_M)) * 60  # 30600
+_DURATION_HARD_CAP_SEC = _BH_DAY_SEC * 10   # 10 business days — absolute max (garbage data)
+_DURATION_MISMATCH_SEC = _BH_DAY_SEC * 2    # 2 business days — suspected mismatch threshold
+
+
+def _event_key(e: dict) -> tuple:
+    """Stable identity tuple for duration pre-computation lookup."""
+    return (e.get("event_type") or "", e.get("date") or "", e.get("time") or "",
+            e.get("assigned_to") or "", e.get("sender") or "",
+            e.get("subject") or "")
+
+
+def _pop_nearest_preceding(sorted_times: list[datetime], before: datetime) -> datetime | None:
+    """Pop and return the latest timestamp in *sorted_times* that is < *before*.
+    Returns None if no such timestamp exists."""
+    idx = bisect.bisect_left(sorted_times, before)
+    if idx > 0:
+        return sorted_times.pop(idx - 1)
+    return None
 
 
 def _business_seconds(start: datetime, end: datetime) -> float:
@@ -560,7 +579,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
 
     active_staff = len(staff_list) if staff_list else 0
 
-    # Avg completion time — infer durations via per-staff FIFO queues
+    # Avg completion time — infer durations via per-staff nearest-preceding matching
     # (mirrors _compute_staff_kpis logic: match each COMPLETED to the
     #  earliest unmatched ASSIGNED for the same staff member)
     _avg_staff_queues: dict[str, list[datetime]] = defaultdict(list)
@@ -590,40 +609,44 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
                 email = sender if _is_staff(sender) else ""
             if not email or not _avg_staff_queues.get(email):
                 continue
-            if range_start_dt and _avg_staff_queues[email][0] >= range_start_dt:
-                continue
-            _avg_staff_queues[email].pop(0)
+            completed_ts = e.get("completed_ts") or e.get("event_ts")
+            if completed_ts:
+                _pop_nearest_preceding(_avg_staff_queues[email], completed_ts)
 
     durations = []
+    suppressed_count = 0
     for e in filtered:
         if e["event_type"] != "COMPLETED":
             continue
 
+        dur = None
+
         # Try explicit duration_sec first
         if e["duration_sec"] is not None and e["duration_sec"] > 0:
-            durations.append(e["duration_sec"])
-            continue
+            dur = e["duration_sec"]
+        else:
+            # Resolve staff email for this completion
+            email = (e.get("assigned_to") or "").strip().lower()
+            if not _is_staff(email):
+                sender = (e.get("sender") or "").strip().lower()
+                email = sender if _is_staff(sender) else ""
 
-        # Resolve staff email for this completion
-        email = (e.get("assigned_to") or "").strip().lower()
-        if not _is_staff(email):
-            sender = (e.get("sender") or "").strip().lower()
-            email = sender if _is_staff(sender) else ""
+            completed_ts = e.get("completed_ts") or e.get("event_ts")
+            if email and completed_ts and _avg_staff_queues.get(email):
+                # Match to nearest preceding unclaimed ASSIGNED timestamp
+                a_ts = _pop_nearest_preceding(_avg_staff_queues[email], completed_ts)
+                if a_ts is not None:
+                    delta = _business_seconds(a_ts, completed_ts)
+                    if 0 < delta:
+                        dur = delta
 
-        completed_ts = e.get("completed_ts") or e.get("event_ts")
-        if not email or not completed_ts or not _avg_staff_queues.get(email):
-            continue
-
-        # Pop earliest ASSIGNED timestamp that precedes this completion
-        while _avg_staff_queues[email]:
-            a_ts = _avg_staff_queues[email][0]
-            if a_ts >= completed_ts:
-                break
-            _avg_staff_queues[email].pop(0)
-            delta = _business_seconds(a_ts, completed_ts)
-            if 0 < delta <= _BH_DAY_SEC * 10:
-                durations.append(delta)
-                break
+        if dur is not None:
+            if dur > _DURATION_HARD_CAP_SEC:
+                continue  # garbage data — discard entirely
+            if dur > _DURATION_MISMATCH_SEC:
+                suppressed_count += 1
+                continue  # suspected mismatch — exclude from average
+            durations.append(dur)
 
     avg_time_sec = sum(durations) / len(durations) if durations else 0
 
@@ -675,6 +698,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
         "total_processed": total_processed,
         "next_staff": next_staff,
         "hib_burst": hib_burst,
+        "durations_suppressed": suppressed_count,
     }
 
     # ── Per-staff KPIs (filtered range for counts, all events for active) ──
@@ -801,7 +825,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     *filtered* is the date-range subset (for assigned/completed counts).
     *all_events* is the full dataset (for truly-open active count).
     *date_start* is the YYYY-MM-DD lower bound so we can pre-consume the
-    FIFO queue with completions before the filtered range.
+    queue with completions before the filtered range.
     If all_events is None, falls back to filtered for backwards compat.
     """
     # Group by staff email — counts from filtered range
@@ -853,7 +877,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
         if prev is None or ts < prev:
             earliest_assigned_ts_by_key[key] = ts
 
-    # Fallback: per-staff ASSIGNED timestamps for FIFO matching
+    # Fallback: per-staff ASSIGNED timestamps for nearest-preceding matching
     # when msg_key matching is not possible.
     staff_assigned_ts_queue: dict[str, list[datetime]] = defaultdict(list)
     for e in (all_events if all_events is not None else filtered):
@@ -868,13 +892,10 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     for q in staff_assigned_ts_queue.values():
         q.sort()
 
-    # Pre-consume FIFO queue with completions BEFORE the filtered date range.
+    # Pre-consume queue with completions BEFORE the filtered date range.
     # Without this, a narrow filter (e.g. TODAY) leaves the queue full of
     # old assignments, causing today's completions to match stale entries.
-    # Only pop assignment entries that are themselves before the range so we
-    # never steal today's assignments for yesterday's completions.
     if date_start and all_events is not None:
-        range_start_dt = _parse_ts(f"{date_start}T00:00:00")
         for e in all_events:
             if e["event_type"] != "COMPLETED":
                 continue
@@ -887,13 +908,9 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             key = e.get("msg_key") or ""
             if key and earliest_assigned_ts_by_key.get(key):
                 continue
-            # Consume one FIFO entry, but only if it's before the date range.
-            # This prevents yesterday's excess completions from eating today's
-            # assignments.
-            if staff_assigned_ts_queue.get(email):
-                if range_start_dt and staff_assigned_ts_queue[email][0] >= range_start_dt:
-                    continue  # next queue entry is inside the range — don't consume
-                staff_assigned_ts_queue[email].pop(0)
+            completed_ts = _resolve_received_ts(e, "completed")
+            if completed_ts and staff_assigned_ts_queue.get(email):
+                _pop_nearest_preceding(staff_assigned_ts_queue[email], completed_ts)
 
     for e in filtered:
         et = e["event_type"]
@@ -905,26 +922,25 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             staff_assigned[email] += 1
         elif et == "COMPLETED":
             staff_completed[email] += 1
+            dur = None
             if e["duration_sec"] is not None and e["duration_sec"] > 0:
-                staff_durations[email].append(e["duration_sec"])
+                dur = e["duration_sec"]
             else:
                 key = e.get("msg_key") or ""
                 assigned_ts = earliest_assigned_ts_by_key.get(key) if key else None
                 completed_ts = _resolve_received_ts(e, "completed")
                 if assigned_ts and completed_ts:
                     inferred_sec = _business_seconds(assigned_ts, completed_ts)
-                    if inferred_sec > 0:
-                        staff_durations[email].append(inferred_sec)
+                    if 0 < inferred_sec:
+                        dur = inferred_sec
                 elif completed_ts and staff_assigned_ts_queue.get(email):
-                    while staff_assigned_ts_queue[email]:
-                        a_ts = staff_assigned_ts_queue[email][0]
-                        if a_ts >= completed_ts:
-                            break  # assignment is after completion — stop, don't waste entries
-                        staff_assigned_ts_queue[email].pop(0)
+                    a_ts = _pop_nearest_preceding(staff_assigned_ts_queue[email], completed_ts)
+                    if a_ts is not None:
                         delta = _business_seconds(a_ts, completed_ts)
-                        if 0 < delta <= _BH_DAY_SEC * 10:
-                            staff_durations[email].append(delta)
-                            break
+                        if 0 < delta:
+                            dur = delta
+            if dur is not None and dur <= _DURATION_HARD_CAP_SEC and dur <= _DURATION_MISMATCH_SEC:
+                staff_durations[email].append(dur)
 
     # Track active count from ALL events using simple counts.
     # (msg_keys differ between ASSIGNED and COMPLETED events so set
@@ -1131,7 +1147,7 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
         if prev is None or ts < prev:
             earliest_assigned_ts[key] = ts
 
-    # 2. Per-staff FIFO queues of ASSIGNED timestamps
+    # 2. Per-staff sorted lists of ASSIGNED timestamps (for nearest-preceding matching)
     staff_queues: dict[str, list[datetime]] = defaultdict(list)
     for e in all_events:
         if e["event_type"] != "ASSIGNED":
@@ -1145,11 +1161,11 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
     for q in staff_queues.values():
         q.sort()
 
-    # Pre-consume FIFO queue with COMPLETED events that precede the filtered set,
+    # Pre-consume queue with COMPLETED events that precede the filtered set,
     # so that today's completions don't match stale assignments.
-    filtered_set = set(id(e) for e in filtered)
+    filtered_set = set(_event_key(e) for e in filtered)
     for e in all_events:
-        if e["event_type"] != "COMPLETED" or id(e) in filtered_set:
+        if e["event_type"] != "COMPLETED" or _event_key(e) in filtered_set:
             continue
         email = _resolve_email(e)
         if not email:
@@ -1159,8 +1175,35 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
             continue
         completed_ts = _resolve_ts(e, "completed")
         if completed_ts and staff_queues.get(email):
-            if staff_queues[email][0] < completed_ts:
-                staff_queues[email].pop(0)
+            _pop_nearest_preceding(staff_queues[email], completed_ts)
+
+    # Pre-compute durations for ALL filtered COMPLETED events in chronological
+    # order.  Nearest-preceding matching must happen chronologically so that
+    # newer completions don't steal the nearest ASSIGNED from earlier ones.
+    _precomputed_dur: dict[tuple, float | None] = {}
+    _completed_chrono = [
+        e for e in filtered
+        if e["event_type"] == "COMPLETED" and not (e["duration_sec"] and e["duration_sec"] > 0)
+    ]
+    _completed_chrono.sort(key=lambda e: e.get("completed_ts") or e.get("event_ts") or datetime.min)
+    for e in _completed_chrono:
+        completed_ts = _resolve_ts(e, "completed")
+        key = e.get("msg_key") or ""
+        assigned_ts = earliest_assigned_ts.get(key) if key else None
+        email = _resolve_email(e)
+        dur = None
+        if assigned_ts and completed_ts:
+            dur = _business_seconds(assigned_ts, completed_ts)
+        elif completed_ts and email and staff_queues.get(email):
+            a_ts = _pop_nearest_preceding(staff_queues[email], completed_ts)
+            if a_ts is not None:
+                dur = _business_seconds(a_ts, completed_ts)
+        if dur is not None and (dur <= 0 or dur > _DURATION_HARD_CAP_SEC):
+            dur = None
+        # Suppress display for suspected mismatches (> 2 BD) but keep in dict as None
+        if dur is not None and dur > _DURATION_MISMATCH_SEC:
+            dur = None
+        _precomputed_dur[_event_key(e)] = dur
 
     # ------------------------------------------------------------------
 
@@ -1200,25 +1243,10 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
     for e in feed_events[:limit]:
         staff = _display_staff(e)
 
-        # Infer duration for COMPLETED events
+        # Infer duration for COMPLETED events (pre-computed in chronological order)
         dur_sec = e["duration_sec"]
         if e["event_type"] == "COMPLETED" and not dur_sec:
-            completed_ts = _resolve_ts(e, "completed")
-            key = e.get("msg_key") or ""
-            assigned_ts = earliest_assigned_ts.get(key) if key else None
-            email = _resolve_email(e)
-            if assigned_ts and completed_ts:
-                dur_sec = _business_seconds(assigned_ts, completed_ts)
-            elif completed_ts and email and staff_queues.get(email):
-                while staff_queues[email]:
-                    a_ts = staff_queues[email][0]
-                    if a_ts >= completed_ts:
-                        break
-                    staff_queues[email].pop(0)
-                    delta = _business_seconds(a_ts, completed_ts)
-                    if delta > 0:
-                        dur_sec = delta
-                        break
+            dur_sec = _precomputed_dur.get(_event_key(e))
 
         result.append({
             "time": e["event_ts"].strftime("%H:%M:%S") if e["event_ts"] else "",
