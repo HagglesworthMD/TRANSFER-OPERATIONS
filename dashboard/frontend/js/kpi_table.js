@@ -20,6 +20,23 @@ const KPITable = {
                 this._render();
             });
         });
+
+        // Delegated click handler for staff name CSV export
+        const tbody = document.getElementById('kpi-tbody');
+        if (tbody) {
+            tbody.addEventListener('click', (e) => {
+                const cell = e.target.closest('.cell-name-link');
+                if (!cell) return;
+                const name = cell.dataset.name;
+                if (!name) return;
+                const dsEl = document.getElementById('date-start');
+                const deEl = document.getElementById('date-end');
+                const dateStart = dsEl ? dsEl.value : '';
+                const dateEnd = deEl ? deEl.value : '';
+                const url = `/api/staff-export?name=${encodeURIComponent(name)}&date_start=${encodeURIComponent(dateStart)}&date_end=${encodeURIComponent(dateEnd)}`;
+                window.open(url, '_blank');
+            });
+        }
     },
 
     update(staffKpis) {
@@ -67,7 +84,7 @@ const KPITable = {
                 : '';
 
             return `<tr class="${rowClass}">
-                <td class="cell-name">${this._esc(s.name)}</td>
+                <td class="cell-name cell-name-link" data-name="${this._esc(s.name)}">${this._esc(s.name)}</td>
                 <td>${s.assigned}</td>
                 <td>${s.completed}</td>
                 <td>${s.active}</td>
