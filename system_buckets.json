@@ -26,6 +26,12 @@
   ],
   "quarantine_domains": [],
   "held_domains": [],
+  "transfer_senders": [
+    "tracey.wickstein@sa.gov.au"
+  ],
+  "system_notification_senders": [],
+  "quarantine_senders": [],
+  "held_senders": [],
   "folders": {
     "completed": "01_COMPLETED",
     "non_actionable": "02_PROCESSED",

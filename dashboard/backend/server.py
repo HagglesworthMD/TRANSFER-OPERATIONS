@@ -1,5 +1,7 @@
 """FastAPI app — all endpoints + static file serving."""
 
+import csv
+import io
 import json
 import logging
 import os
@@ -10,13 +12,13 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import config
 from .data_reader import get_file_info, load_csv, load_json
-from .kpi_engine import compute_dashboard
+from .kpi_engine import compute_dashboard, export_staff_events
 
 logging.basicConfig(
     level=logging.INFO,
@@ -254,6 +256,19 @@ def _load_system_buckets_json() -> tuple[dict | None, str | None]:
     held_domains, err = _normalize_list(data.get("held_domains"), kind="domain", field_name="held_domains")
     if err:
         return None, err
+    # Sender override lists (optional — backward compatible)
+    transfer_senders, err = _normalize_list(data.get("transfer_senders"), kind="email", field_name="transfer_senders")
+    if err:
+        return None, err
+    system_notification_senders, err = _normalize_list(data.get("system_notification_senders"), kind="email", field_name="system_notification_senders")
+    if err:
+        return None, err
+    quarantine_senders, err = _normalize_list(data.get("quarantine_senders"), kind="email", field_name="quarantine_senders")
+    if err:
+        return None, err
+    held_senders, err = _normalize_list(data.get("held_senders"), kind="email", field_name="held_senders")
+    if err:
+        return None, err
     folders, err = _validate_folders(data.get("folders"))
     if err:
         return None, err
@@ -262,6 +277,10 @@ def _load_system_buckets_json() -> tuple[dict | None, str | None]:
         "system_notification_domains": system_notification_domains,
         "quarantine_domains": quarantine_domains,
         "held_domains": held_domains,
+        "transfer_senders": transfer_senders,
+        "system_notification_senders": system_notification_senders,
+        "quarantine_senders": quarantine_senders,
+        "held_senders": held_senders,
         "folders": folders,
     }, None
 
@@ -304,6 +323,10 @@ def _build_domain_policy_payload() -> dict:
         system_notification_domains = buckets_cfg.get("system_notification_domains", [])
         quarantine_domains = buckets_cfg.get("quarantine_domains", [])
         held_domains = buckets_cfg.get("held_domains", [])
+        transfer_senders = buckets_cfg.get("transfer_senders", [])
+        system_notification_senders = buckets_cfg.get("system_notification_senders", [])
+        quarantine_senders = buckets_cfg.get("quarantine_senders", [])
+        held_senders = buckets_cfg.get("held_senders", [])
         folders = buckets_cfg.get("folders", dict(_DEFAULT_FOLDERS))
     else:
         legacy = _read_domain_policy_legacy()
@@ -315,6 +338,10 @@ def _build_domain_policy_payload() -> dict:
         quarantine_domains = quarantine_domains or []
         held_domains, _ = _normalize_list(legacy.get("always_hold_domains", []), kind="domain", field_name="held_domains")
         held_domains = held_domains or []
+        transfer_senders = []
+        system_notification_senders = []
+        quarantine_senders = []
+        held_senders = []
         folders = dict(_DEFAULT_FOLDERS)
 
     return {
@@ -322,6 +349,10 @@ def _build_domain_policy_payload() -> dict:
         "system_notification_domains": system_notification_domains,
         "quarantine_domains": quarantine_domains,
         "held_domains": held_domains,
+        "transfer_senders": transfer_senders,
+        "system_notification_senders": system_notification_senders,
+        "quarantine_senders": quarantine_senders,
+        "held_senders": held_senders,
         "staff_round_robin": staff_rr,
         "apps_team_recipients": apps_recipients,
         "manager_recipients": manager_recipients,
@@ -356,6 +387,18 @@ def _save_domain_policy_payload(payload: dict) -> tuple[bool, str | None]:
     held_domains, err = _normalize_list(payload.get("held_domains"), kind="domain", field_name="held_domains")
     if err:
         return False, err
+    transfer_senders, err = _normalize_list(payload.get("transfer_senders"), kind="email", field_name="transfer_senders")
+    if err:
+        return False, err
+    system_notification_senders, err = _normalize_list(payload.get("system_notification_senders"), kind="email", field_name="system_notification_senders")
+    if err:
+        return False, err
+    quarantine_senders, err = _normalize_list(payload.get("quarantine_senders"), kind="email", field_name="quarantine_senders")
+    if err:
+        return False, err
+    held_senders, err = _normalize_list(payload.get("held_senders"), kind="email", field_name="held_senders")
+    if err:
+        return False, err
     folders, err = _validate_folders(payload.get("folders"))
     if err:
         return False, err
@@ -368,6 +411,10 @@ def _save_domain_policy_payload(payload: dict) -> tuple[bool, str | None]:
         "system_notification_domains": system_notification_domains,
         "quarantine_domains": quarantine_domains,
         "held_domains": held_domains,
+        "transfer_senders": transfer_senders,
+        "system_notification_senders": system_notification_senders,
+        "quarantine_senders": quarantine_senders,
+        "held_senders": held_senders,
         "folders": folders,
     }
 
@@ -451,6 +498,41 @@ async def dashboard_endpoint(date_start: str | None = None, date_end: str | None
     if csv_err:
         payload["warning"] = csv_err
     return payload
+
+
+@app.get("/api/staff-export")
+async def staff_export(name: str, date_start: str | None = None, date_end: str | None = None):
+    """Download a CSV of all events for a given staff member in the date range."""
+    if not name or not name.strip():
+        raise HTTPException(status_code=400, detail="name parameter is required")
+
+    rows, csv_err = load_csv(config.DAILY_STATS_CSV)
+    if not rows:
+        raise HTTPException(status_code=404, detail="No data available")
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    ds = date_start or today
+    de = date_end or today
+
+    events = export_staff_events(rows, name, ds, de)
+
+    # Build CSV in memory
+    buf = io.StringIO()
+    fieldnames = ["Date", "Time", "Type", "Subject", "Sender", "Source", "Risk Level", "Domain", "Duration"]
+    writer = csv.DictWriter(buf, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(events)
+
+    # Build filename: replace spaces with underscores
+    safe_name = name.strip().replace(" ", "_")
+    filename = f"{safe_name}_{ds}.csv"
+
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/config/domain_policy")
@@ -606,9 +688,20 @@ _DOMAIN_BUCKETS = {
     "quarantine": "quarantine_domains",
 }
 
+_SENDER_BUCKETS = {
+    "external_image_request": "transfer_senders",
+    "system_notification": "system_notification_senders",
+    "always_hold": "held_senders",
+    "quarantine": "quarantine_senders",
+}
+
 
 class DomainRequest(BaseModel):
     domain: str
+
+
+class SenderRequest(BaseModel):
+    sender: str
 
 
 def _read_domain_policy() -> dict:
@@ -632,6 +725,23 @@ def _validate_bucket(bucket: str) -> str:
 def _validate_domain(domain: str) -> str:
     """Normalise and validate a domain string."""
     val, err = _normalize_domain(domain)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    assert val is not None
+    return val
+
+
+def _validate_sender_bucket(bucket: str) -> str:
+    """Return the JSON key for the sender bucket, or raise 404."""
+    key = _SENDER_BUCKETS.get(bucket)
+    if not key:
+        raise HTTPException(status_code=404, detail=f"Unknown bucket: {bucket}")
+    return key
+
+
+def _validate_sender(sender: str) -> str:
+    """Normalise and validate a sender email string."""
+    val, err = _normalize_email(sender)
     if err:
         raise HTTPException(status_code=400, detail=err)
     assert val is not None
@@ -677,6 +787,49 @@ async def remove_domain(bucket: str, domain: str):
         raise HTTPException(status_code=400, detail=err or "Failed to save config")
     logger.info("Removed domain %s from %s", domain, bucket)
     return {"domains": _build_domain_policy_payload().get(key, [])}
+
+
+# ── Sender override endpoints ──
+
+@app.get("/api/senders/{bucket}")
+async def get_senders(bucket: str):
+    key = _validate_sender_bucket(bucket)
+    payload = _build_domain_policy_payload()
+    return {"senders": payload.get(key, [])}
+
+
+@app.post("/api/senders/{bucket}")
+async def add_sender(bucket: str, body: SenderRequest):
+    key = _validate_sender_bucket(bucket)
+    sender = _validate_sender(body.sender)
+    payload = _build_domain_policy_payload()
+    senders = payload.get(key, [])
+    if sender in senders:
+        raise HTTPException(status_code=400, detail=f"{sender} already in {bucket}")
+    senders.append(sender)
+    payload[key] = senders
+    ok, err = _save_domain_policy_payload(payload)
+    if not ok:
+        raise HTTPException(status_code=400, detail=err or "Failed to save config")
+    logger.info("Added sender %s to %s", sender, bucket)
+    return {"senders": _build_domain_policy_payload().get(key, [])}
+
+
+@app.delete("/api/senders/{bucket}/{sender:path}")
+async def remove_sender(bucket: str, sender: str):
+    key = _validate_sender_bucket(bucket)
+    sender = _validate_sender(sender)
+    payload = _build_domain_policy_payload()
+    senders = payload.get(key, [])
+    if sender not in senders:
+        raise HTTPException(status_code=404, detail=f"{sender} not found in {bucket}")
+    senders = [s for s in senders if s != sender]
+    payload[key] = senders
+    ok, err = _save_domain_policy_payload(payload)
+    if not ok:
+        raise HTTPException(status_code=400, detail=err or "Failed to save config")
+    logger.info("Removed sender %s from %s", sender, bucket)
+    return {"senders": _build_domain_policy_payload().get(key, [])}
 
 
 @app.get("/api/health")

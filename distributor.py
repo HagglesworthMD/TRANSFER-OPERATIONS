@@ -985,6 +985,34 @@ def _parse_system_buckets_json(obj):
     if err:
         return None, err
 
+    # Optional sender override lists (backward compatible — missing keys default to [])
+    def _parse_senders(key):
+        raw = obj.get(key)
+        if raw is None:
+            return [], None
+        if not isinstance(raw, list):
+            return None, f"system_buckets.json key not a list: {key}"
+        senders = []
+        for item in raw:
+            email = normalize_email(item)
+            if not email:
+                return None, f"system_buckets.json contains invalid email in {key}"
+            senders.append(email)
+        return _dedupe_preserve_order(senders), None
+
+    transfer_senders, err = _parse_senders("transfer_senders")
+    if err:
+        return None, err
+    system_notification_senders, err = _parse_senders("system_notification_senders")
+    if err:
+        return None, err
+    quarantine_senders, err = _parse_senders("quarantine_senders")
+    if err:
+        return None, err
+    held_senders, err = _parse_senders("held_senders")
+    if err:
+        return None, err
+
     folders_in = obj.get("folders", {})
     allowed_folder_keys = {
         "completed",
@@ -1006,6 +1034,10 @@ def _parse_system_buckets_json(obj):
         "system_notification_domains": system_notification_domains,
         "quarantine_domains": quarantine_domains,
         "held_domains": held_domains,
+        "transfer_senders": transfer_senders,
+        "system_notification_senders": system_notification_senders,
+        "quarantine_senders": quarantine_senders,
+        "held_senders": held_senders,
         "folders": folders,
     }, None
 
@@ -1619,6 +1651,61 @@ def is_domain_known(sender_email, known_domains):
         return False
     return domain in known_domains
 
+def classify_sender(sender_email, sender_domain, policy):
+    """
+    Unified sender classification: exact sender match first, then domain match.
+
+    Returns (bucket, match_level) if an explicit policy bucket matches,
+    or (None, None) if no match — caller falls back to existing internal/unknown logic.
+
+    Priority (explicit, deterministic — no dict iteration):
+      1. quarantine  (sender, then domain)
+      2. hold        (sender, then domain)
+      3. system_notification (sender, then domain)
+      4. external_image_request (sender, then domain)
+    """
+    email_lower = sender_email.lower().strip() if sender_email else ""
+    domain_lower = sender_domain.lower().strip() if sender_domain else ""
+
+    # Build sets for O(1) membership (lists stored in JSON, sets built at runtime)
+    q_senders = set(policy.get("quarantine_senders", []))
+    q_domains = set(d.lower().strip() for d in policy.get("quarantine_domains", []))
+    h_senders = set(policy.get("held_senders", []))
+    h_domains = set(d.lower().strip() for d in policy.get("held_domains", []))
+    sn_senders = set(policy.get("system_notification_senders", []))
+    sn_domains = set(d.lower().strip() for d in policy.get("system_notification_domains", []))
+    eir_senders = set(policy.get("transfer_senders", []))
+    eir_domains = set(d.lower().strip() for d in policy.get("transfer_domains", []))
+
+    # 1. Quarantine
+    if email_lower and email_lower in q_senders:
+        return "quarantine", "sender"
+    if domain_lower and domain_lower in q_domains:
+        return "quarantine", "domain"
+
+    # 2. Hold
+    if email_lower and email_lower in h_senders:
+        return "hold", "sender"
+    if domain_lower and domain_lower in h_domains:
+        return "hold", "domain"
+
+    # 3. System notification
+    if email_lower and email_lower in sn_senders:
+        return "system_notification", "sender"
+    if domain_lower and domain_lower in sn_domains:
+        return "system_notification", "domain"
+
+    # 4. External image request
+    if email_lower and email_lower in eir_senders:
+        return "external_image_request", "sender"
+    if domain_lower and domain_lower in eir_domains:
+        return "external_image_request", "domain"
+
+    # No explicit policy match
+    return None, None
+
+
+# Superseded by classify_sender() for process_inbox routing — kept for backward compatibility.
 def classify_sender_domain(domain, policy):
     """
     Classify sender domain based on policy.
@@ -2401,10 +2488,19 @@ def process_inbox():
     # Load domain policy
     domain_policy, policy_valid = load_domain_policy()
     if isinstance(buckets_cfg, dict):
-        domain_policy["external_image_request_domains"] = buckets_cfg.get("transfer_domains", domain_policy.get("external_image_request_domains", []))
+        # Canonical domain keys (from _parse_system_buckets_json)
+        domain_policy["transfer_domains"] = buckets_cfg.get("transfer_domains", domain_policy.get("transfer_domains", []))
         domain_policy["system_notification_domains"] = buckets_cfg.get("system_notification_domains", domain_policy.get("system_notification_domains", []))
         domain_policy["quarantine_domains"] = buckets_cfg.get("quarantine_domains", domain_policy.get("quarantine_domains", []))
-        domain_policy["always_hold_domains"] = buckets_cfg.get("held_domains", domain_policy.get("always_hold_domains", []))
+        domain_policy["held_domains"] = buckets_cfg.get("held_domains", domain_policy.get("held_domains", []))
+        # Legacy aliases (other code may reference these names)
+        domain_policy["external_image_request_domains"] = domain_policy.get("transfer_domains", [])
+        domain_policy["always_hold_domains"] = domain_policy.get("held_domains", [])
+        # Sender override lists
+        domain_policy["transfer_senders"] = buckets_cfg.get("transfer_senders", [])
+        domain_policy["system_notification_senders"] = buckets_cfg.get("system_notification_senders", [])
+        domain_policy["quarantine_senders"] = buckets_cfg.get("quarantine_senders", [])
+        domain_policy["held_senders"] = buckets_cfg.get("held_senders", [])
     policy_source = "valid" if policy_valid else "invalid_fallback"
     known_domains = get_known_domains(domain_policy) if policy_valid else set()
     allowlist_valid = bool(known_domains)
@@ -2650,9 +2746,22 @@ def process_inbox():
                     # Extract email details (resolve SMTP for Exchange users)
                     sender_email = resolve_sender_smtp(msg) or "unknown"
 
-                    # Extract and classify sender domain
+                    # Extract and classify sender (sender override first, then domain)
                     sender_domain = extract_sender_domain(sender_email)
-                    domain_bucket = classify_sender_domain(sender_domain, domain_policy) if sender_domain else "unknown"
+                    domain_bucket, match_level = classify_sender(sender_email, sender_domain, domain_policy)
+                    if domain_bucket is None:
+                        # No explicit policy match — fall through to existing internal/unknown logic
+                        domain_bucket = classify_sender_domain(sender_domain, domain_policy) if sender_domain else "unknown"
+                        # Only set match_level for explicit policy buckets, not defaults
+                        if domain_bucket in ("quarantine", "hold", "system_notification", "external_image_request"):
+                            match_level = "domain"
+                        else:
+                            match_level = None
+
+                    if match_level == "sender":
+                        log(f"POLICY_MATCH level=sender bucket={domain_bucket} sender={sender_email}", "INFO")
+                    elif match_level == "domain":
+                        log(f"POLICY_MATCH level=domain bucket={domain_bucket} domain={sender_domain}", "INFO")
 
                     if domain_bucket == "quarantine":
                         log(f"ROUTE_QUARANTINE domain={sender_domain}", "WARN")
@@ -3314,6 +3423,10 @@ def process_inbox():
                         action_taken = "FALLBACK_ROUTING"
                         log(f"FALLBACK_ROUTING domain_bucket={domain_bucket}", "WARN")
 
+                    # Append match_level to action for audit trail (e.g. IMAGE_REQUEST_EXTERNAL/sender)
+                    if match_level and action_taken and action_taken != "hib_noise_suppressed":
+                        action_taken = f"{action_taken}/{match_level}"
+
                     # Handle SAMI completion early
                     if is_completion:
                         append_stats(subject, "completed", sender_email, "normal", domain_bucket, action_taken, policy_source, event_type="COMPLETED")
@@ -3363,6 +3476,8 @@ def process_inbox():
                     }
                     if action_taken == "hib_noise_suppressed":
                         processed_ledger[message_key]["reason"] = "hib_noise_suppressed"
+                    if match_level:
+                        processed_ledger[message_key]["match_level"] = match_level
                     if identity.get("entry_id"):
                         processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
                     if identity.get("store_id"):

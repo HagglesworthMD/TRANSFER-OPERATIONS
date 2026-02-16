@@ -127,4 +127,30 @@ const DashboardAPI = {
         if (!res.ok) throw new Error(data.detail || 'Failed to remove domain');
         return data;
     },
+
+    async getSenders(bucket) {
+        const res = await fetch(`${this.base}/api/senders/${encodeURIComponent(bucket)}`);
+        if (!res.ok) throw new Error(`Senders API: ${res.status}`);
+        return res.json();
+    },
+
+    async addSender(bucket, sender) {
+        const res = await fetch(`${this.base}/api/senders/${encodeURIComponent(bucket)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sender }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to add sender');
+        return data;
+    },
+
+    async removeSender(bucket, sender) {
+        const res = await fetch(`${this.base}/api/senders/${encodeURIComponent(bucket)}/${encodeURIComponent(sender)}`, {
+            method: 'DELETE',
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to remove sender');
+        return data;
+    },
 };

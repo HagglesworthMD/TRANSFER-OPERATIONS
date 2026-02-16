@@ -4,6 +4,7 @@ const StaffPanel = {
     _emailRegex: /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/,
 
     _domainBuckets: ['external_image_request', 'system_notification', 'always_hold', 'quarantine'],
+    _senderBuckets: ['external_image_request', 'system_notification', 'always_hold', 'quarantine'],
 
     init() {
         const btn = document.getElementById('staff-add-btn');
@@ -47,11 +48,26 @@ const StaffPanel = {
             }
         }
 
+        // Initialize sender override buttons
+        for (const bucket of this._senderBuckets) {
+            const sndBtn = document.getElementById(`sender-${bucket}-add-btn`);
+            const sndInput = document.getElementById(`sender-${bucket}-input`);
+            if (sndBtn) sndBtn.addEventListener('click', () => this._addSender(bucket));
+            if (sndInput) {
+                sndInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') this._addSender(bucket);
+                });
+            }
+        }
+
         this.loadStaff();
         this.loadManagers();
         this.loadApps();
         for (const bucket of this._domainBuckets) {
             this.loadDomains(bucket);
+        }
+        for (const bucket of this._senderBuckets) {
+            this.loadSenders(bucket);
         }
     },
 
@@ -350,5 +366,70 @@ const StaffPanel = {
     _hideDomainError(errorId) {
         const el = document.getElementById(errorId);
         if (el) el.classList.add('hidden');
+    },
+
+    // ── Sender override management (generic across buckets) ──
+
+    async loadSenders(bucket) {
+        const listId = `sender-${bucket}-list`;
+        try {
+            const data = await DashboardAPI.getSenders(bucket);
+            this._renderSenderList(bucket, listId, data.senders || []);
+        } catch (err) {
+            console.error(`Failed to load senders for ${bucket}:`, err);
+        }
+    },
+
+    _renderSenderList(bucket, listId, senders) {
+        const ul = document.getElementById(listId);
+        if (!ul) return;
+
+        ul.innerHTML = senders.map(sender => {
+            return `<li>
+                <span class="staff-email">${this._esc(sender)}</span>
+                <button class="btn btn-remove" data-sender="${this._esc(sender)}">Remove</button>
+            </li>`;
+        }).join('');
+
+        ul.querySelectorAll('.btn-remove').forEach(btn => {
+            btn.addEventListener('click', () => this._removeSender(bucket, btn.dataset.sender));
+        });
+    },
+
+    async _addSender(bucket) {
+        const inputId = `sender-${bucket}-input`;
+        const errorId = `sender-${bucket}-error`;
+        const listId = `sender-${bucket}-list`;
+        const input = document.getElementById(inputId);
+        if (!input) return;
+
+        const sender = input.value.trim().toLowerCase();
+        if (!sender) return;
+
+        if (!sender.includes('@') || !sender.split('@')[1].includes('.')) {
+            this._showDomainError(errorId, 'Sender must be a valid email (user@domain.com)');
+            return;
+        }
+
+        try {
+            const data = await DashboardAPI.addSender(bucket, sender);
+            this._renderSenderList(bucket, listId, data.senders || []);
+            input.value = '';
+            this._hideDomainError(errorId);
+        } catch (err) {
+            this._showDomainError(errorId, err.message);
+        }
+    },
+
+    async _removeSender(bucket, sender) {
+        const errorId = `sender-${bucket}-error`;
+        const listId = `sender-${bucket}-list`;
+        try {
+            const data = await DashboardAPI.removeSender(bucket, sender);
+            this._renderSenderList(bucket, listId, data.senders || []);
+            this._hideDomainError(errorId);
+        } catch (err) {
+            this._showDomainError(errorId, err.message);
+        }
     },
 };
