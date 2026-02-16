@@ -205,10 +205,9 @@ const ActivityFeed = {
             alert('No active tickets to reconcile.');
             return;
         }
-        // Use the card's active count (assigned-completed) for clarity
         const cardEl = document.getElementById('card-active');
         const cardCount = cardEl ? cardEl.textContent.trim() : '?';
-        if (!confirm(`Reconcile all ${count} displayed tickets?\nActive count will go from ${cardCount} to 0.`)) {
+        if (!confirm(`Reconcile all active tickets?\nActive count will go from ${cardCount} to 0.`)) {
             return;
         }
         const reason = prompt('Reason (optional):', 'Bulk reconcile — balanced');
