@@ -21,6 +21,9 @@ SETTINGS_OVERRIDES_JSON = BASE_DIR / "settings_overrides.json"
 HIB_WATCHDOG_JSON = BASE_DIR / "hib_watchdog.json"
 DOMAIN_POLICY_JSON = BASE_DIR / "domain_policy.json"
 
+# Dashboard-managed reconciliation state
+RECONCILED_JSON = Path(__file__).resolve().parent / "reconciled_identities.json"
+
 # ── Server ──
 HOST = "0.0.0.0"
 PORT = 3000

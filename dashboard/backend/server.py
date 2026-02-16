@@ -18,7 +18,8 @@ from pydantic import BaseModel
 
 from . import config
 from .data_reader import get_file_info, load_csv, load_json
-from .kpi_engine import compute_dashboard, export_staff_events
+from .kpi_engine import compute_dashboard, export_active_events, export_staff_events
+from .reconciliation import load_reconciled, load_reconciled_set, add_reconciled, remove_reconciled
 
 logging.basicConfig(
     level=logging.INFO,
@@ -492,9 +493,10 @@ async def dashboard_endpoint(date_start: str | None = None, date_end: str | None
         staff_list, _ = _normalize_list(staff_list, kind="email", field_name="staff_round_robin")
         staff_list = staff_list or []
 
+    rec_set = load_reconciled_set()
     payload = compute_dashboard(rows, roster, settings, staff_list, hib_state,
                                 date_start=date_start, date_end=date_end,
-                                staff_filter=staff)
+                                staff_filter=staff, reconciled_set=rec_set)
     if csv_err:
         payload["warning"] = csv_err
     return payload
@@ -533,6 +535,193 @@ async def staff_export(name: str, date_start: str | None = None, date_end: str |
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+
+
+@app.get("/api/active")
+async def active_rows(date_start: str | None = None, date_end: str | None = None,
+                      staff: str | None = None):
+    """Return likely-open ASSIGNED tickets for modal display."""
+    rows, _ = load_csv(config.DAILY_STATS_CSV)
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    ds = date_start or today
+    de = date_end or today
+
+    rec_set = load_reconciled_set()
+    active = export_active_events(rows, ds, de, staff_name=staff,
+                                  reconciled_set=rec_set)
+    payload_rows = [
+        {
+            "date": r.get("Date", ""),
+            "time": r.get("Time", ""),
+            "sami_ref": r.get("SAMI Ref", ""),
+            "staff": r.get("Staff", ""),
+            "sender": r.get("Sender", ""),
+            "domain": r.get("Domain", ""),
+            "risk_level": r.get("Risk Level", ""),
+            "subject": r.get("Subject", ""),
+            "msg_key": r.get("Message Key", ""),
+            "identity": r.get("Identity", ""),
+        }
+        for r in active
+    ]
+
+    # Additive: include reconciled entries for this context
+    rec_state = load_reconciled()
+    rec_entries = rec_state.get("reconciled", [])
+    if staff:
+        staff_lower = staff.strip().lower()
+        rec_entries = [
+            e for e in rec_entries
+            if (e.get("staff_email") or "").strip().lower() == staff_lower
+            or staff_lower in (e.get("staff_email") or "").lower()
+        ]
+
+    return {
+        "rows": payload_rows,
+        "count": len(payload_rows),
+        "date_start": ds,
+        "date_end": de,
+        "reconciled": rec_entries,
+    }
+
+
+@app.get("/api/active-export")
+async def active_export(date_start: str | None = None, date_end: str | None = None,
+                        staff: str | None = None):
+    """Download active-ticket CSV including SAMI reference codes."""
+    rows, _ = load_csv(config.DAILY_STATS_CSV)
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    ds = date_start or today
+    de = date_end or today
+
+    rec_set = load_reconciled_set()
+    active = export_active_events(rows, ds, de, staff_name=staff,
+                                  reconciled_set=rec_set)
+
+    buf = io.StringIO()
+    fieldnames = ["Date", "Time", "SAMI Ref", "Staff", "Sender", "Domain", "Risk Level", "Subject", "Message Key"]
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(active)
+
+    if staff and staff.strip():
+        safe_staff = re.sub(r"[^a-zA-Z0-9_\-]+", "_", staff.strip())
+        filename = f"active_{safe_staff}_{ds}_{de}.csv"
+    else:
+        filename = f"active_{ds}_{de}.csv"
+
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+# ── Reconciliation endpoints ──
+
+@app.get("/api/staff/{email}/active")
+async def staff_active(email: str, date_start: str | None = None,
+                       date_end: str | None = None):
+    """Return active tickets for a specific staff member, filtered by reconciliation."""
+    rows, _ = load_csv(config.DAILY_STATS_CSV)
+
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    ds = date_start or today
+    de = date_end or today
+
+    rec_set = load_reconciled_set()
+    active = export_active_events(rows, ds, de, staff_name=email,
+                                  reconciled_set=rec_set)
+    payload_rows = [
+        {
+            "date": r.get("Date", ""),
+            "time": r.get("Time", ""),
+            "sami_ref": r.get("SAMI Ref", ""),
+            "staff": r.get("Staff", ""),
+            "sender": r.get("Sender", ""),
+            "domain": r.get("Domain", ""),
+            "risk_level": r.get("Risk Level", ""),
+            "subject": r.get("Subject", ""),
+            "msg_key": r.get("Message Key", ""),
+            "identity": r.get("Identity", ""),
+        }
+        for r in active
+    ]
+
+    rec_state = load_reconciled()
+    email_lower = email.strip().lower()
+    rec_entries = [
+        e for e in rec_state.get("reconciled", [])
+        if (e.get("staff_email") or "").strip().lower() == email_lower
+    ]
+
+    return {
+        "rows": payload_rows,
+        "count": len(payload_rows),
+        "date_start": ds,
+        "date_end": de,
+        "reconciled": rec_entries,
+    }
+
+
+@app.post("/api/reconcile")
+async def reconcile_add(request: Request):
+    """Mark an active item as reconciled."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    identity = (body.get("identity") or "").strip()
+    staff_email = (body.get("staff_email") or "").strip()
+    if not identity:
+        raise HTTPException(status_code=400, detail="identity is required")
+    if not staff_email:
+        raise HTTPException(status_code=400, detail="staff_email is required")
+
+    from datetime import datetime as _dt, timezone as _tz
+    entry = {
+        "identity": identity,
+        "staff_email": staff_email.lower(),
+        "ts": _dt.now(_tz.utc).isoformat(),
+    }
+    if body.get("sami_ref"):
+        entry["sami_ref"] = body["sami_ref"].strip()
+    if body.get("msg_key_norm"):
+        entry["msg_key_norm"] = body["msg_key_norm"].strip().lower()
+    if body.get("reason"):
+        entry["reason"] = body["reason"].strip()
+
+    ok, err = add_reconciled(entry)
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Failed to write reconciliation: {err}")
+
+    return {"ok": True, "identity": identity}
+
+
+@app.post("/api/reconcile/remove")
+async def reconcile_remove(request: Request):
+    """Remove a reconciled entry (undo)."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    identity = (body.get("identity") or "").strip()
+    if not identity:
+        raise HTTPException(status_code=400, detail="identity is required")
+
+    ok, err = remove_reconciled(identity)
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Failed to update reconciliation: {err}")
+
+    return {"ok": True, "identity": identity}
 
 
 @app.get("/api/config/domain_policy")

@@ -78,7 +78,7 @@
                 <div class="card-label">Completions</div>
                 <div class="card-value" id="card-completions">—</div>
             </div>
-            <div class="card summary-card" data-key="active_count">
+            <div class="card summary-card card-clickable" data-key="active_count" id="active-card" title="Click to view active tickets">
                 <div class="card-label">Active</div>
                 <div class="card-value" id="card-active">—</div>
             </div>
@@ -234,6 +234,7 @@
                         <option value="">All Staff</option>
                     </select>
                     <button id="clear-filter" class="clear-filter-btn" style="display: none;">Clear</button>
+                    <button id="show-active-btn" class="clear-filter-btn" type="button">Show Active</button>
                 </div>
                 <div class="feed-wrap" id="activity-feed-wrap">
                     <table class="feed-table" id="activity-feed-table">
@@ -351,6 +352,43 @@
             </div>
         </section>
     </main>
+
+
+    <div class="active-modal hidden" id="active-modal" role="dialog" aria-modal="true" aria-labelledby="active-modal-title">
+        <div class="active-modal-backdrop" id="active-modal-backdrop"></div>
+        <div class="active-modal-card">
+            <div class="active-modal-header">
+                <h2 class="panel-title" id="active-modal-title">Active Tickets</h2>
+                <div class="active-modal-actions">
+                    <button id="active-download-btn" class="clear-filter-btn" type="button">Download CSV</button>
+                    <button id="active-close-btn" class="clear-filter-btn" type="button">Close</button>
+                </div>
+            </div>
+            <div class="active-modal-meta" id="active-modal-meta">Loading...</div>
+            <div class="feed-wrap">
+                <table class="feed-table" id="active-modal-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Time</th>
+                            <th>SAMI Ref</th>
+                            <th>Staff</th>
+                            <th>Sender</th>
+                            <th>Domain</th>
+                            <th>Risk</th>
+                            <th>Subject</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="active-modal-tbody"></tbody>
+                </table>
+            </div>
+            <div class="reconciled-section" id="reconciled-section">
+                <button class="clear-filter-btn" id="toggle-reconciled-btn" type="button">Show Reconciled</button>
+                <div class="reconciled-list hidden" id="reconciled-list"></div>
+            </div>
+        </div>
+    </div>
 
     <!-- JS Modules -->
     <script src="/js/api.js"></script>

@@ -3,16 +3,20 @@
 const DashboardAPI = {
     base: '',
 
-    async getDashboard(params) {
-        let url = `${this.base}/api/dashboard`;
+    _toQuery(params) {
+        const qs = new URLSearchParams();
         if (params) {
-            const qs = new URLSearchParams();
             if (params.dateStart) qs.set('date_start', params.dateStart);
             if (params.dateEnd) qs.set('date_end', params.dateEnd);
             if (params.staff) qs.set('staff', params.staff);
-            const s = qs.toString();
-            if (s) url += '?' + s;
         }
+        const s = qs.toString();
+        return s ? `?${s}` : '';
+    },
+
+    async getDashboard(params) {
+        let url = `${this.base}/api/dashboard`;
+        url += this._toQuery(params);
         const res = await fetch(url);
         if (!res.ok) throw new Error(`Dashboard API: ${res.status}`);
         return res.json();
@@ -151,6 +155,47 @@ const DashboardAPI = {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || 'Failed to remove sender');
+        return data;
+    },
+
+    async getActive(params) {
+        const res = await fetch(`${this.base}/api/active${this._toQuery(params)}`);
+        if (!res.ok) throw new Error(`Active API: ${res.status}`);
+        return res.json();
+    },
+
+    getActiveCsvUrl(params) {
+        return `${this.base}/api/active-export${this._toQuery(params)}`;
+    },
+
+    async getStaffActive(email, params) {
+        const qs = this._toQuery(params);
+        const res = await fetch(`${this.base}/api/staff/${encodeURIComponent(email)}/active${qs}`);
+        if (!res.ok) throw new Error(`Staff Active API: ${res.status}`);
+        return res.json();
+    },
+
+    async reconcile(identity, staffEmail, reason) {
+        const body = { identity, staff_email: staffEmail };
+        if (reason) body.reason = reason;
+        const res = await fetch(`${this.base}/api/reconcile`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to reconcile');
+        return data;
+    },
+
+    async removeReconcile(identity) {
+        const res = await fetch(`${this.base}/api/reconcile/remove`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ identity }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to remove reconciliation');
         return data;
     },
 };

@@ -1,4 +1,4 @@
-/* Recent activity table — live scrolling feed */
+/* Recent activity table - live scrolling feed */
 
 const ActivityFeed = {
     _prevKeys: new Set(),
@@ -6,6 +6,8 @@ const ActivityFeed = {
     _currentFilter: '',
     _sortKey: 'time',
     _sortDir: 'desc',
+    _activeRows: [],
+    _activeParams: null,
 
     init() {
         const filterSelect = document.getElementById('staff-filter');
@@ -29,6 +31,38 @@ const ActivityFeed = {
             });
         }
 
+        const showActiveBtn = document.getElementById('show-active-btn');
+        const activeCloseBtn = document.getElementById('active-close-btn');
+        const activeBackdrop = document.getElementById('active-modal-backdrop');
+        const activeDownloadBtn = document.getElementById('active-download-btn');
+
+        if (showActiveBtn) {
+            showActiveBtn.addEventListener('click', () => this._openActiveModal());
+        }
+        const activeCard = document.getElementById('active-card');
+        if (activeCard) {
+            activeCard.addEventListener('click', () => this._openActiveModal());
+        }
+        if (activeCloseBtn) {
+            activeCloseBtn.addEventListener('click', () => this._closeActiveModal());
+        }
+        if (activeBackdrop) {
+            activeBackdrop.addEventListener('click', () => this._closeActiveModal());
+        }
+        if (activeDownloadBtn) {
+            activeDownloadBtn.addEventListener('click', () => {
+                const params = this._activeParams || this._currentDateParams();
+                const url = DashboardAPI.getActiveCsvUrl(params);
+                window.open(url, '_blank');
+            });
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this._closeActiveModal();
+            }
+        });
+
         // Column sorting
         const headers = document.querySelectorAll('#activity-feed-table thead th.sortable');
         headers.forEach(th => {
@@ -47,7 +81,7 @@ const ActivityFeed = {
         });
     },
 
-    /** Full unfiltered feed — used to build the staff dropdown. */
+    /** Full unfiltered feed - used to build the staff dropdown. */
     _allStaffNames: new Set(),
 
     update(feed) {
@@ -56,6 +90,183 @@ const ActivityFeed = {
         this._currentFeed = feed;
         this._updateStaffFilter(feed);
         this._applyFilter();
+    },
+
+    _currentDateParams() {
+        if (typeof App !== 'undefined' && typeof App._getDateParams === 'function') {
+            return App._getDateParams();
+        }
+        return null;
+    },
+
+    async _openActiveModal() {
+        const modal = document.getElementById('active-modal');
+        const meta = document.getElementById('active-modal-meta');
+        const tbody = document.getElementById('active-modal-tbody');
+        if (!modal || !meta || !tbody) return;
+
+        modal.classList.remove('hidden');
+        meta.textContent = 'Loading active tickets...';
+        tbody.innerHTML = '<tr><td colspan="9">Loading...</td></tr>';
+
+        try {
+            const params = this._currentDateParams();
+            this._activeParams = params;
+            const data = await DashboardAPI.getActive(params);
+            this._activeRows = Array.isArray(data.rows) ? data.rows : [];
+            this._renderActiveRows(this._activeRows);
+            meta.textContent = `${data.count || 0} active tickets (${data.date_start || ''} to ${data.date_end || ''})`;
+            this._renderReconciledSection(data.reconciled || []);
+        } catch (err) {
+            meta.textContent = `Failed to load active tickets: ${err.message}`;
+            tbody.innerHTML = '<tr><td colspan="9">Failed to load active tickets.</td></tr>';
+        }
+    },
+
+    _closeActiveModal() {
+        const modal = document.getElementById('active-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+        }
+    },
+
+    _renderActiveRows(rows) {
+        const tbody = document.getElementById('active-modal-tbody');
+        if (!tbody) return;
+
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9">No active tickets found for this date range.</td></tr>';
+            return;
+        }
+
+        const htmlRows = rows.map((item, idx) => {
+            const sami = (item.sami_ref || '').trim();
+            const samiHtml = sami
+                ? `<span class="ref-badge" data-ref="${this._esc(sami)}" title="Click to copy ${this._esc(sami)}">${this._esc(sami)}</span>`
+                : '';
+            const subjectHtml = this._linkifyRefs(this._truncate(item.subject || '', 90));
+            const identity = item.identity || '';
+            const hasIdentity = identity.length > 0;
+            const reconcileBtn = hasIdentity
+                ? `<button class="btn-reconcile" data-idx="${idx}" title="Mark reconciled">Reconcile</button>`
+                : '';
+
+            return `<tr>
+                <td>${this._esc(item.date)}</td>
+                <td>${this._esc(item.time)}</td>
+                <td>${samiHtml}</td>
+                <td>${this._esc(item.staff)}</td>
+                <td>${this._esc(item.sender)}</td>
+                <td>${this._esc(item.domain)}</td>
+                <td>${this._esc(item.risk_level)}</td>
+                <td title="${this._esc(item.subject)}">${subjectHtml}</td>
+                <td>${reconcileBtn}</td>
+            </tr>`;
+        });
+
+        tbody.innerHTML = htmlRows.join('');
+        this._wireRefCopy(tbody);
+        this._wireReconcileButtons(tbody, rows);
+    },
+
+    _wireReconcileButtons(container, rows) {
+        container.querySelectorAll('.btn-reconcile').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const idx = parseInt(btn.dataset.idx, 10);
+                const item = rows[idx];
+                if (!item) return;
+
+                const reason = prompt('Reason for reconciliation (optional):');
+                if (reason === null) return; // cancelled
+
+                btn.disabled = true;
+                btn.textContent = '...';
+                try {
+                    await DashboardAPI.reconcile(item.identity, item.staff, reason || '');
+                    await this._openActiveModal();
+                } catch (err) {
+                    alert('Failed to reconcile: ' + err.message);
+                    btn.disabled = false;
+                    btn.textContent = 'Reconcile';
+                }
+            });
+        });
+    },
+
+    _renderReconciledSection(entries) {
+        const section = document.getElementById('reconciled-section');
+        const listEl = document.getElementById('reconciled-list');
+        const toggleBtn = document.getElementById('toggle-reconciled-btn');
+        if (!section || !listEl || !toggleBtn) return;
+
+        if (!entries || entries.length === 0) {
+            section.style.display = 'none';
+            return;
+        }
+
+        section.style.display = '';
+        toggleBtn.textContent = `Show Reconciled (${entries.length})`;
+
+        // Remove old listener by cloning
+        const newToggle = toggleBtn.cloneNode(true);
+        toggleBtn.parentNode.replaceChild(newToggle, toggleBtn);
+        newToggle.addEventListener('click', () => {
+            listEl.classList.toggle('hidden');
+            newToggle.textContent = listEl.classList.contains('hidden')
+                ? `Show Reconciled (${entries.length})`
+                : `Hide Reconciled (${entries.length})`;
+        });
+
+        const rows = entries.map(e => {
+            const id = this._esc(e.identity || '');
+            const staff = this._esc(e.staff_email || '');
+            const reason = this._esc(e.reason || '');
+            const ts = this._esc((e.ts || '').substring(0, 19));
+            return `<div class="reconciled-item">
+                <span class="reconciled-identity">${id}</span>
+                <span class="reconciled-staff">${staff}</span>
+                ${reason ? `<span class="reconciled-reason">${reason}</span>` : ''}
+                <span class="reconciled-ts">${ts}</span>
+                <button class="btn-undo" data-identity="${id}">Undo</button>
+            </div>`;
+        });
+
+        listEl.innerHTML = rows.join('');
+
+        listEl.querySelectorAll('.btn-undo').forEach(btn => {
+            btn.addEventListener('click', async (ev) => {
+                ev.stopPropagation();
+                btn.disabled = true;
+                btn.textContent = '...';
+                try {
+                    await DashboardAPI.removeReconcile(btn.dataset.identity);
+                    await this._openActiveModal();
+                } catch (err) {
+                    alert('Failed to undo: ' + err.message);
+                    btn.disabled = false;
+                    btn.textContent = 'Undo';
+                }
+            });
+        });
+    },
+
+    _wireRefCopy(container) {
+        if (!container) return;
+        container.querySelectorAll('.ref-badge').forEach(el => {
+            el.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const ref = el.dataset.ref;
+                navigator.clipboard.writeText(ref).then(() => {
+                    el.classList.add('copied');
+                    el.setAttribute('title', 'Copied!');
+                    setTimeout(() => {
+                        el.classList.remove('copied');
+                        el.setAttribute('title', `Click to copy ${ref}`);
+                    }, 1500);
+                });
+            });
+        });
     },
 
     _updateStaffFilter(feed) {
@@ -161,22 +372,7 @@ const ActivityFeed = {
 
         tbody.innerHTML = rows.join('');
         this._prevKeys = newKeys;
-
-        // Wire up click-to-copy on ref badges
-        tbody.querySelectorAll('.ref-badge').forEach(el => {
-            el.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const ref = el.dataset.ref;
-                navigator.clipboard.writeText(ref).then(() => {
-                    el.classList.add('copied');
-                    el.setAttribute('title', 'Copied!');
-                    setTimeout(() => {
-                        el.classList.remove('copied');
-                        el.setAttribute('title', `Click to copy ${ref}`);
-                    }, 1500);
-                });
-            });
-        });
+        this._wireRefCopy(tbody);
     },
 
     _linkifyRefs(str) {
