@@ -2877,13 +2877,14 @@ def process_inbox():
                         if hib_moved:
                             continue
                     # Internal staff guard - skip round-robin but allow completion
-                    if is_internal_sender(sender_email) and is_staff_sender(sender_email, staff_list):
+                    sender_override_matched = (match_level == "sender")
+                    if (not sender_override_matched) and is_internal_sender(sender_email) and is_staff_sender(sender_email, staff_list):
                         if not is_completion_subject(subject):
                             log(f"INTERNAL_STAFF_EMAIL skip_new_job sender={sender_email}", "INFO")
                             continue
 
                     # Internal non-staff safety guard
-                    if is_internal_sender(sender_email) and not is_staff_sender(sender_email, staff_list):
+                    if (not sender_override_matched) and is_internal_sender(sender_email) and (not is_staff_sender(sender_email, staff_list)):
                         log(f"ROUTE manager reason=internal_sender_not_in_staff sender={sender_email}", "INFO")
                         try:
                             _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
