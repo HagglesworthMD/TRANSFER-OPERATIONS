@@ -188,7 +188,7 @@ const ActivityFeed = {
                 btn.disabled = true;
                 btn.textContent = '...';
                 try {
-                    await DashboardAPI.reconcile(item.identity, item.staff, reason || '');
+                    await DashboardAPI.reconcile(item.identity, item.staff, reason || '', item.sami_ref || '');
                     await this._openActiveModal();
                 } catch (err) {
                     alert('Failed to reconcile: ' + err.message);
@@ -259,11 +259,13 @@ const ActivityFeed = {
         const rows = entries.map(e => {
             const id = this._esc(e.identity || '');
             const staff = this._esc(e.staff_email || '');
+            const sami = this._esc(e.sami_ref || '');
             const reason = this._esc(e.reason || '');
             const ts = this._esc((e.ts || '').substring(0, 19));
             return `<div class="reconciled-item">
                 <span class="reconciled-identity">${id}</span>
                 <span class="reconciled-staff">${staff}</span>
+                ${sami ? `<span class="ref-badge" data-ref="${sami}" title="Click to copy ${sami}">${sami}</span>` : ''}
                 ${reason ? `<span class="reconciled-reason">${reason}</span>` : ''}
                 <span class="reconciled-ts">${ts}</span>
                 <button class="btn-undo" data-identity="${id}">Undo</button>
@@ -396,7 +398,12 @@ const ActivityFeed = {
                 ? `<span class="risk-badge ${item.risk_level}">${item.risk_level}</span>`
                 : '';
 
-            const subjectHtml = this._linkifyRefs(this._truncate(item.subject, 55));
+            const samiRef = (item.sami_ref || '').trim();
+            let subjectHtml = this._linkifyRefs(this._truncate(item.subject, 55));
+            if (samiRef && !(item.subject || '').toUpperCase().includes(samiRef.toUpperCase())) {
+                const safeRef = this._esc(samiRef);
+                subjectHtml = `<span class="ref-badge" data-ref="${safeRef}" title="Click to copy ${safeRef}">${safeRef}</span> ${subjectHtml}`;
+            }
 
             return `<tr class="${isNew ? 'new-row' : ''}">
                 <td>${this._esc(item.time)}</td>

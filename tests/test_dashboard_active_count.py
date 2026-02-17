@@ -379,6 +379,35 @@ class DashboardActiveCountTests(unittest.TestCase):
         self.assertEqual(len(active_rows), 0)
         self.assertEqual(payload["summary"]["active_count"], 0)
 
+    def test_assigned_sami_id_is_exposed_in_active_and_activity_feed(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="11:00:00",
+                subject="Image transfer request",
+                event_type="ASSIGNED",
+                assigned_to="alice.smith@example.com",
+                msg_key="legacy-z1",
+                sami_id="SAMI-XYZ123",
+            ),
+        ]
+
+        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+        self.assertEqual(len(active_rows), 1)
+        self.assertEqual(active_rows[0]["SAMI Ref"], "SAMI-XYZ123")
+
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end=self.DAY,
+            reconciled_set=set(),
+        )
+        self.assertEqual(payload["activity_feed"][0]["sami_ref"], "SAMI-XYZ123")
+
 
 if __name__ == "__main__":
     unittest.main()

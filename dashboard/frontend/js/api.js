@@ -175,9 +175,10 @@ const DashboardAPI = {
         return res.json();
     },
 
-    async reconcile(identity, staffEmail, reason) {
+    async reconcile(identity, staffEmail, reason, samiRef) {
         const body = { identity, staff_email: staffEmail };
         if (reason) body.reason = reason;
+        if (samiRef) body.sami_ref = samiRef;
         const res = await fetch(`${this.base}/api/reconcile`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

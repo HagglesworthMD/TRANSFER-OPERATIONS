@@ -443,6 +443,13 @@ def _extract_sami_ref(subject: str) -> str:
     return f"SAMI-{m.group(1).upper()}"
 
 
+def _display_sami_ref(e: dict) -> str:
+    sami_id = (e.get("sami_id") or "").strip()
+    if sami_id:
+        return sami_id
+    return _extract_sami_ref(e.get("subject") or "")
+
+
 def _normalise_subject_for_completion_match(subject: str) -> str:
     """Normalise subject for fallback assignment↔completion matching."""
     s = (subject or "").strip()
@@ -495,7 +502,7 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
             continue
         if (e.get("date") or "") > date_end:
             continue
-        ref = _extract_sami_ref(e.get("subject") or "")
+        ref = _display_sami_ref(e)
         if ref:
             completed_refs.add(ref)
         group_key = _resolve_group_key(e)
@@ -526,7 +533,7 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
             continue
 
         subject = e.get("subject") or ""
-        sami_ref = _extract_sami_ref(subject)
+        sami_ref = _display_sami_ref(e)
         msg_key = (e.get("msg_key") or "").strip().lower()
         group_key = _resolve_group_key(e)
         current_ts = e.get("event_ts")
@@ -1307,6 +1314,7 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
             "date": e["date"],
             "type": e["event_type"],
             "subject": e["subject"][:80],
+            "sami_ref": _display_sami_ref(e),
             "assigned_to": _staff_display_name(staff) if _is_staff(staff) else staff,
             "duration_human": format_duration_human(dur_sec) if dur_sec else "",
             "duration_sec": dur_sec if dur_sec else None,
