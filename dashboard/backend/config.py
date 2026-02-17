@@ -7,6 +7,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # ── Data files (read-only except staff.txt) ──
 DAILY_STATS_CSV = BASE_DIR / "daily_stats.csv"
+DAILY_STATS_V2_CSV = BASE_DIR / "daily_stats_v2.csv"
 STAFF_TXT = BASE_DIR / "staff.txt"          # legacy fallback (do not write)
 MANAGERS_TXT = BASE_DIR / "managers.txt"    # legacy fallback (do not write)
 APPS_TXT = BASE_DIR / "apps.txt"            # legacy fallback (do not write)

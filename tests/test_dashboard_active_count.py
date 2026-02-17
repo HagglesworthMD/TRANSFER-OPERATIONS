@@ -17,6 +17,7 @@ class DashboardActiveCountTests(unittest.TestCase):
         assigned_to="",
         sender="requester@example.com",
         msg_key="",
+        sami_id="",
         action=None,
         risk_level="normal",
         domain_bucket="external_image_request",
@@ -44,6 +45,7 @@ class DashboardActiveCountTests(unittest.TestCase):
             "Action": action,
             "event_type": event_type,
             "msg_key": msg_key,
+            "sami_id": sami_id,
             "assigned_to": assigned_to,
             "assigned_ts": assigned_ts or "",
             "completed_ts": completed_ts or "",
@@ -296,6 +298,86 @@ class DashboardActiveCountTests(unittest.TestCase):
         self.assertEqual(staff_row["assigned"], 3)
         self.assertEqual(staff_row["completed"], 3)
         self.assertEqual(staff_row["active"], 0)
+
+    def test_sami_id_groups_assignment_and_completion_when_msg_key_differs(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Open request one",
+                event_type="ASSIGNED",
+                assigned_to="alice.smith@example.com",
+                msg_key="legacy-a1",
+                sami_id="SAMI-AB12CD",
+            ),
+            self._row(
+                date=self.DAY,
+                time="09:25:00",
+                subject="[COMPLETED] Closed request one",
+                event_type="COMPLETED",
+                assigned_to="alice.smith@example.com",
+                sender="alice.smith@example.com",
+                msg_key="legacy-c9",
+                sami_id="SAMI-AB12CD",
+            ),
+        ]
+
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end=self.DAY,
+            reconciled_set=set(),
+        )
+        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+
+        self.assertEqual(len(active_rows), 0)
+        self.assertEqual(payload["summary"]["active_count"], 0)
+        staff_row = payload["staff_kpis"][0]
+        self.assertEqual(staff_row["assigned"], 1)
+        self.assertEqual(staff_row["completed"], 1)
+        self.assertEqual(staff_row["active"], 0)
+
+    def test_blank_sami_id_uses_legacy_grouping_fallback(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="10:00:00",
+                subject="Image transfer request",
+                event_type="ASSIGNED",
+                assigned_to="alice.smith@example.com",
+                msg_key="legacy-a1",
+                sami_id="",
+            ),
+            self._row(
+                date=self.DAY,
+                time="10:25:00",
+                subject="[COMPLETED] Image transfer request",
+                event_type="COMPLETED",
+                assigned_to="alice.smith@example.com",
+                sender="alice.smith@example.com",
+                msg_key="legacy-c9",
+                sami_id="",
+            ),
+        ]
+
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end=self.DAY,
+            reconciled_set=set(),
+        )
+        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+
+        self.assertEqual(len(active_rows), 0)
+        self.assertEqual(payload["summary"]["active_count"], 0)
 
 
 if __name__ == "__main__":

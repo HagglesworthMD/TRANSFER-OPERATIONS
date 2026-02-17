@@ -111,6 +111,13 @@ def _load_list_from_legacy_txt(path: Path) -> list[str]:
     return out
 
 
+def _resolve_stats_csv_path() -> Path:
+    """Prefer v2 stats file when present, else legacy file."""
+    if config.DAILY_STATS_V2_CSV.exists():
+        return config.DAILY_STATS_V2_CSV
+    return config.DAILY_STATS_CSV
+
+
 def _normalize_email(raw) -> tuple[str | None, str | None]:
     if not isinstance(raw, str):
         return None, "Email must be a string"
@@ -480,7 +487,7 @@ async def dashboard_endpoint(date_start: str | None = None, date_end: str | None
         date_end:   YYYY-MM-DD (optional, defaults to today)
         staff:      display name to filter activity feed (optional)
     """
-    rows, csv_err = load_csv(config.DAILY_STATS_CSV)
+    rows, csv_err = load_csv(_resolve_stats_csv_path())
     roster, _ = load_json(config.ROSTER_STATE_JSON)
     settings, _ = load_json(config.SETTINGS_OVERRIDES_JSON)
     hib_state, _ = load_json(config.HIB_WATCHDOG_JSON)
@@ -508,7 +515,7 @@ async def staff_export(name: str, date_start: str | None = None, date_end: str |
     if not name or not name.strip():
         raise HTTPException(status_code=400, detail="name parameter is required")
 
-    rows, csv_err = load_csv(config.DAILY_STATS_CSV)
+    rows, csv_err = load_csv(_resolve_stats_csv_path())
     if not rows:
         raise HTTPException(status_code=404, detail="No data available")
 
@@ -543,7 +550,7 @@ async def staff_export(name: str, date_start: str | None = None, date_end: str |
 async def active_rows(date_start: str | None = None, date_end: str | None = None,
                       staff: str | None = None):
     """Return likely-open ASSIGNED tickets for modal display."""
-    rows, _ = load_csv(config.DAILY_STATS_CSV)
+    rows, _ = load_csv(_resolve_stats_csv_path())
 
     from datetime import datetime as _dt
     today = _dt.now().strftime("%Y-%m-%d")
@@ -593,7 +600,7 @@ async def active_rows(date_start: str | None = None, date_end: str | None = None
 async def active_export(date_start: str | None = None, date_end: str | None = None,
                         staff: str | None = None):
     """Download active-ticket CSV including SAMI reference codes."""
-    rows, _ = load_csv(config.DAILY_STATS_CSV)
+    rows, _ = load_csv(_resolve_stats_csv_path())
 
     from datetime import datetime as _dt
     today = _dt.now().strftime("%Y-%m-%d")
@@ -628,7 +635,7 @@ async def active_export(date_start: str | None = None, date_end: str | None = No
 async def staff_active(email: str, date_start: str | None = None,
                        date_end: str | None = None):
     """Return active tickets for a specific staff member, filtered by reconciliation."""
-    rows, _ = load_csv(config.DAILY_STATS_CSV)
+    rows, _ = load_csv(_resolve_stats_csv_path())
 
     from datetime import datetime as _dt
     today = _dt.now().strftime("%Y-%m-%d")
@@ -734,7 +741,7 @@ async def reconcile_all(request: Request):
 
     reason = (body.get("reason") or "Reconcile all").strip()
 
-    rows, _ = load_csv(config.DAILY_STATS_CSV)
+    rows, _ = load_csv(_resolve_stats_csv_path())
     from datetime import datetime as _dt, timezone as _tz
     today = _dt.now().strftime("%Y-%m-%d")
     ds = body.get("date_start") or today
