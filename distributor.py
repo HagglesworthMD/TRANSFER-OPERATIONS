@@ -54,6 +54,7 @@ FILES = {
     "staff": "staff.txt",
     "state": "roster_state.json",
     "log": "daily_stats.csv",
+    "log_v2": "daily_stats_v2.csv",
     "watchdog": "urgent_watchdog.json"
 }
 
@@ -1943,7 +1944,7 @@ def get_next_staff():
     
     return person
 
-def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", domain_bucket="", action="", policy_source="", event_type="", msg_key="", status_after="", assigned_ts="", completed_ts="", duration_sec=""):
+def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", domain_bucket="", action="", policy_source="", event_type="", msg_key="", status_after="", assigned_ts="", completed_ts="", duration_sec="", sami_id=""):
     """Append entry to daily stats CSV with full 16-column schema"""
     try:
         file_exists = os.path.isfile(FILES["log"])
@@ -1964,12 +1965,15 @@ def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", do
             writer = csv.writer(f)
             if not file_exists:
                 # New file: write full 16-column header
-                writer.writerow([
+                v1_header = [
                     'Date', 'Time', 'Subject', 'Assigned To', 'Sender', 'Risk Level',
                     'Domain Bucket', 'Action', 'Policy Source', 'event_type', 'msg_key',
                     'status_after', 'assigned_to', 'assigned_ts', 'completed_ts', 'duration_sec'
-                ])
+                ]
+                writer.writerow(v1_header)
                 use_old_schema = False
+            else:
+                v1_header = None
 
             now = datetime.now()
 
@@ -1983,9 +1987,10 @@ def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", do
                     sender,
                     risk_level
                 ])
+                v1_row = None
             else:
                 # Full 16-column schema
-                writer.writerow([
+                v1_row = [
                     now.strftime('%Y-%m-%d'),
                     now.strftime('%H:%M:%S'),
                     subject,
@@ -2002,9 +2007,27 @@ def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", do
                     assigned_ts,
                     completed_ts,
                     duration_sec
-                ])
+                ]
+                writer.writerow(v1_row)
     except Exception as e:
         log(f"Error writing stats: {e}", "ERROR")
+
+    # --- V2 file: v1 columns + trailing sami_id ---
+    try:
+        if v1_row is not None:
+            v2_path = FILES["log_v2"]
+            v2_exists = os.path.isfile(v2_path)
+            with open(v2_path, 'a', newline='', encoding='utf-8') as f2:
+                writer2 = csv.writer(f2)
+                if not v2_exists:
+                    writer2.writerow((v1_header or [
+                        'Date', 'Time', 'Subject', 'Assigned To', 'Sender', 'Risk Level',
+                        'Domain Bucket', 'Action', 'Policy Source', 'event_type', 'msg_key',
+                        'status_after', 'assigned_to', 'assigned_ts', 'completed_ts', 'duration_sec'
+                    ]) + ['sami_id'])
+                writer2.writerow(v1_row + [sami_id])
+    except Exception as e:
+        log(f"Error writing stats v2: {e}", "ERROR")
 
 def maybe_rotate_daily_stats_to_new_schema():
     """
@@ -3178,7 +3201,8 @@ def process_inbox():
                                     "COMPLETION_MATCHED",
                                     domain_bucket,
                                     "COMPLETION_SUBJECT_KEYWORD",
-                                    policy_source
+                                    policy_source,
+                                    sami_id=processed_ledger.get(match_key, {}).get("sami_id", "")
                                 )
                                 if not save_processed_ledger(processed_ledger):
                                     log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
@@ -3200,7 +3224,8 @@ def process_inbox():
                                     "ts": datetime.now().isoformat(),
                                     "assigned_to": "completed",
                                     "risk": "normal",
-                                    "completion_source": "staff_completed_confirmation"
+                                    "completion_source": "staff_completed_confirmation",
+                                    "sami_id": compute_sami_id(msg) or "",
                                 }
                                 if identity.get("entry_id"):
                                     processed_ledger[message_key]["entry_id"] = identity["entry_id"]
@@ -3210,7 +3235,7 @@ def process_inbox():
                                     processed_ledger[message_key]["internet_message_id"] = identity["internet_message_id"]
                                 if conversation_id:
                                     processed_ledger[message_key]["conversation_id"] = conversation_id
-                                append_stats(subject, "completed", sender_email, "normal", domain_bucket, "STAFF_COMPLETED_CONFIRMATION", policy_source, event_type="COMPLETED", msg_key=message_key)
+                                append_stats(subject, "completed", sender_email, "normal", domain_bucket, "STAFF_COMPLETED_CONFIRMATION", policy_source, event_type="COMPLETED", msg_key=message_key, sami_id=processed_ledger.get(message_key, {}).get("sami_id", ""))
                                 if not save_processed_ledger(processed_ledger):
                                     log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
                                     errors_count += 1
@@ -3239,7 +3264,7 @@ def process_inbox():
                                 entry["completion_source"] = "reply_all_cc"
                                 entry["completion_subject"] = subject
                                 processed_ledger[match_key] = entry
-                                append_stats(subject, "completed", sender_email, "COMPLETION_MATCHED", domain_bucket, "COMPLETION_MATCHED", policy_source, event_type="COMPLETED")
+                                append_stats(subject, "completed", sender_email, "COMPLETION_MATCHED", domain_bucket, "COMPLETION_MATCHED", policy_source, event_type="COMPLETED", sami_id=processed_ledger.get(match_key, {}).get("sami_id", ""))
                             else:
                                 append_stats(subject, "completed", sender_email, "COMPLETION_UNMATCHED", domain_bucket, "COMPLETION_UNMATCHED", policy_source, event_type="COMPLETED")
                             if not save_processed_ledger(processed_ledger):
@@ -3724,10 +3749,28 @@ def process_inbox():
                         else:
                             fwd.Send()
 
+                    # Persist SAMI ID + identity in ledger (all risk levels)
+                    _sami_id = compute_sami_id(msg) or ""
+                    _ledger_entry = processed_ledger.get(message_key, {})
+                    if not _ledger_entry.get("sami_id"):
+                        _ledger_entry["sami_id"] = _sami_id
+                    _ledger_entry["ts"] = datetime.now().isoformat()
+                    _ledger_entry["assigned_to"] = assignee
+                    _ledger_entry["risk"] = risk_level
                     if risk_level == "critical":
-                        updated_ledger = mark_processed(message_key, "critical_forwarded", processed_ledger)
-                        if updated_ledger is not None:
-                            processed_ledger = updated_ledger
+                        _ledger_entry["reason"] = "critical_forwarded"
+                    if identity.get("entry_id"):
+                        _ledger_entry["entry_id"] = identity["entry_id"]
+                    if identity.get("store_id"):
+                        _ledger_entry["store_id"] = identity["store_id"]
+                    if identity.get("internet_message_id"):
+                        _ledger_entry["internet_message_id"] = identity["internet_message_id"]
+                    if conversation_id:
+                        _ledger_entry["conversation_id"] = conversation_id
+                    processed_ledger[message_key] = _ledger_entry
+                    if not save_processed_ledger(processed_ledger):
+                        log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                        errors_count += 1
                     
                     if action_taken != "hib_noise_suppressed":
                         log(f"ASSIGNED msg_id={msg_id} risk={risk_level}", "INFO")
@@ -3738,7 +3781,7 @@ def process_inbox():
                                   "non_actionable", "quarantined", "skipped", "system_notification"}
                     a_norm = (assignee or "").strip().lower()
                     evt_type = "ASSIGNED" if ("@" in a_norm and a_norm not in _non_staff) else ""
-                    append_stats(subject, assignee, sender_email, risk_level, domain_bucket, action_taken, policy_source, event_type=evt_type, msg_key=message_key)
+                    append_stats(subject, assignee, sender_email, risk_level, domain_bucket, action_taken, policy_source, event_type=evt_type, msg_key=message_key, sami_id=_ledger_entry.get("sami_id", ""))
                     msg.UnRead = False
                     _sb_ok2, _sb_actual2 = check_msg_mailbox_store(msg, target_store)
                     if not _sb_ok2:
