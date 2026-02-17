@@ -144,6 +144,41 @@ class CompletionLogicTests(unittest.TestCase):
         self.assertFalse(distributor.is_staff_completed_confirmation('', '[COMPLETED] x', staff_set))
         self.assertFalse(distributor.is_staff_completed_confirmation(None, '[COMPLETED] x', staff_set))
 
+    def test_resolve_completion_sami_context_prefers_subject_sami_over_conversation(self):
+        ledger = {
+            "conv_key": {
+                "conversation_id": "conv-1",
+                "sami_id": "SAMI-NEW999",
+            },
+            "subject_key": {
+                "sami_id": "SAMI-ABC123",
+            },
+        }
+        sami_id, key, source = distributor.resolve_completion_sami_context(
+            ledger,
+            "conv-1",
+            "[COMPLETED] [SAMI-ABC123] done",
+        )
+        self.assertEqual(sami_id, "SAMI-ABC123")
+        self.assertEqual(key, "subject_key")
+        self.assertEqual(source, "subject_sami_id")
+
+    def test_resolve_completion_sami_context_subject_token_without_ledger_match(self):
+        ledger = {
+            "conv_key": {
+                "conversation_id": "conv-1",
+                "sami_id": "SAMI-NEW999",
+            },
+        }
+        sami_id, key, source = distributor.resolve_completion_sami_context(
+            ledger,
+            "conv-1",
+            "[COMPLETED] [SAMI-MISS001] done",
+        )
+        self.assertEqual(sami_id, "SAMI-MISS001")
+        self.assertIsNone(key)
+        self.assertEqual(source, "subject_sami_token")
+
 
 if __name__ == '__main__':
     unittest.main()

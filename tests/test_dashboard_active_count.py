@@ -138,6 +138,7 @@ class DashboardActiveCountTests(unittest.TestCase):
                 event_type="ASSIGNED",
                 assigned_to="alice.smith@example.com",
                 msg_key="g1",
+                sami_id="SAMI-GGG777",
             ),
             self._row(
                 date=self.DAY,
@@ -146,6 +147,7 @@ class DashboardActiveCountTests(unittest.TestCase):
                 event_type="ASSIGNED",
                 assigned_to="bob.jones@example.com",
                 msg_key="h1",
+                sami_id="SAMI-HHH888",
             ),
         ]
         rec_set = {"SAMI-NOT-IN-ACTIVE-LIST"}
@@ -225,7 +227,7 @@ class DashboardActiveCountTests(unittest.TestCase):
         )
         self.assertEqual(payload["summary"]["active_count"], expected_count)
 
-    def test_non_sami_assignments_are_closed_by_completed_subject_fallback(self):
+    def test_non_sami_assignments_stay_active_without_sami_id(self):
         rows = [
             self._row(
                 date=self.DAY,
@@ -292,12 +294,9 @@ class DashboardActiveCountTests(unittest.TestCase):
         )
         active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
 
-        self.assertEqual(len(active_rows), 0)
-        self.assertEqual(payload["summary"]["active_count"], 0)
-        staff_row = payload["staff_kpis"][0]
-        self.assertEqual(staff_row["assigned"], 3)
-        self.assertEqual(staff_row["completed"], 3)
-        self.assertEqual(staff_row["active"], 0)
+        self.assertEqual(len(active_rows), 3)
+        self.assertEqual(payload["summary"]["active_count"], 3)
+        self.assertEqual(payload["staff_kpis"], [])
 
     def test_sami_id_groups_assignment_and_completion_when_msg_key_differs(self):
         rows = [
@@ -341,7 +340,7 @@ class DashboardActiveCountTests(unittest.TestCase):
         self.assertEqual(staff_row["completed"], 1)
         self.assertEqual(staff_row["active"], 0)
 
-    def test_blank_sami_id_uses_legacy_grouping_fallback(self):
+    def test_blank_sami_id_does_not_close_via_legacy_fallback(self):
         rows = [
             self._row(
                 date=self.DAY,
@@ -376,8 +375,8 @@ class DashboardActiveCountTests(unittest.TestCase):
         )
         active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
 
-        self.assertEqual(len(active_rows), 0)
-        self.assertEqual(payload["summary"]["active_count"], 0)
+        self.assertEqual(len(active_rows), 1)
+        self.assertEqual(payload["summary"]["active_count"], 1)
 
     def test_assigned_sami_id_is_exposed_in_active_and_activity_feed(self):
         rows = [
@@ -407,6 +406,32 @@ class DashboardActiveCountTests(unittest.TestCase):
             reconciled_set=set(),
         )
         self.assertEqual(payload["activity_feed"][0]["sami_ref"], "SAMI-XYZ123")
+
+    def test_completed_subject_sami_does_not_close_when_completed_sami_id_mismatches(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="12:00:00",
+                subject="Image transfer request",
+                event_type="ASSIGNED",
+                assigned_to="brian.shaw@sa.gov.au",
+                msg_key="legacy-b1",
+                sami_id="SAMI-49764E",
+            ),
+            self._row(
+                date=self.DAY,
+                time="12:45:00",
+                subject="[COMPLETED] [SAMI-49764E] Image transfer request",
+                event_type="COMPLETED",
+                assigned_to="completed",
+                sender="brian.shaw@sa.gov.au",
+                msg_key="legacy-c1",
+                sami_id="SAMI-2CFB3C",
+            ),
+        ]
+
+        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+        self.assertEqual(len(active_rows), 1)
 
 
 if __name__ == "__main__":

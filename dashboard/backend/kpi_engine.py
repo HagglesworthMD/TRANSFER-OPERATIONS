@@ -444,10 +444,10 @@ def _extract_sami_ref(subject: str) -> str:
 
 
 def _display_sami_ref(e: dict) -> str:
-    sami_id = (e.get("sami_id") or "").strip()
+    sami_id = (e.get("sami_id") or "").strip().upper()
     if sami_id:
         return sami_id
-    return _extract_sami_ref(e.get("subject") or "")
+    return ""
 
 
 def _normalise_subject_for_completion_match(subject: str) -> str:
@@ -485,6 +485,10 @@ def _resolve_group_key(e: dict) -> str:
     return _legacy_group_key(e)
 
 
+def _resolve_sami_group_key(e: dict) -> str:
+    return (e.get("sami_id") or "").strip().lower()
+
+
 def export_active_events(rows: list[dict], date_start: str, date_end: str,
                          staff_name: str | None = None,
                          reconciled_set: set[str] | None = None) -> list[dict]:
@@ -494,30 +498,15 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
 
     staff_target = (staff_name or "").strip().lower()
 
-    completed_refs: set[str] = set()
-    completed_group_keys: set[str] = set()
-    completed_subject_ts: dict[tuple[str, str], list[datetime]] = defaultdict(list)
+    completed_sami_keys: set[str] = set()
     for e in events:
         if e.get("event_type") != "COMPLETED":
             continue
         if (e.get("date") or "") > date_end:
             continue
-        ref = _display_sami_ref(e)
-        if ref:
-            completed_refs.add(ref)
-        group_key = _resolve_group_key(e)
-        if group_key:
-            completed_group_keys.add(group_key)
-        staff_email = (e.get("sender") or "").strip().lower()
-        if not _is_staff(staff_email):
-            staff_email = (e.get("assigned_to") or "").strip().lower()
-        if _is_staff(staff_email):
-            subj_key = _normalise_subject_for_completion_match(e.get("subject") or "")
-            cts = e.get("event_ts")
-            if subj_key and cts:
-                completed_subject_ts[(staff_email, subj_key)].append(cts)
-    for queue in completed_subject_ts.values():
-        queue.sort()
+        sami_key = _resolve_sami_group_key(e)
+        if sami_key:
+            completed_sami_keys.add(sami_key)
 
     latest_by_identity: dict[str, dict] = {}
     for e in filtered:
@@ -535,23 +524,11 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
         subject = e.get("subject") or ""
         sami_ref = _display_sami_ref(e)
         msg_key = (e.get("msg_key") or "").strip().lower()
-        group_key = _resolve_group_key(e)
+        sami_key = _resolve_sami_group_key(e)
         current_ts = e.get("event_ts")
 
-        if sami_ref and sami_ref in completed_refs:
+        if sami_key and sami_key in completed_sami_keys:
             continue
-        if not sami_ref:
-            if group_key and group_key in completed_group_keys:
-                continue
-            # Fallback matcher for rows without SAMI refs when msg_key variants differ.
-            subj_key = _normalise_subject_for_completion_match(subject)
-            if subj_key and current_ts:
-                queue = completed_subject_ts.get((staff_email, subj_key))
-                if queue:
-                    idx = bisect.bisect_left(queue, current_ts)
-                    if idx < len(queue):
-                        queue.pop(idx)
-                        continue
 
         identity = sami_ref or (f"msg:{msg_key}" if msg_key else f"{e.get('date','')}|{e.get('time','')}|{staff_email}|{subject[:40]}")
 
@@ -883,19 +860,26 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     """Per-staff KPI table data.
 
     *filtered* is the date-range subset (for assigned/completed counts).
-    *all_events* is the full dataset (for truly-open active count).
-    *date_start* is the YYYY-MM-DD lower bound so we can pre-consume the
-    queue with completions before the filtered range.
-    If all_events is None, falls back to filtered for backwards compat.
+    *all_events* is the full dataset used for canonical SAMI lifecycle grouping.
+    If all_events is None, falls back to filtered.
     """
-    # Group by staff email — counts from filtered range
-    staff_assigned: dict[str, int] = defaultdict(int)
-    staff_completed: dict[str, int] = defaultdict(int)
-    staff_durations: dict[str, list[float]] = defaultdict(list)
+    # Keep signature stable while this analytical path no longer consumes
+    # legacy reconciliation/active overrides.
+    _ = date_start
+    _ = date_end
+    _ = reconciled_per_staff
+    external_active_by_staff = active_by_staff is not None
     active_by_staff = active_by_staff or {}
 
+    # Group by staff email (canonical per-SAMI job metrics)
+    staff_assigned: dict[str, int] = defaultdict(int)
+    staff_completed: dict[str, int] = defaultdict(int)
+    staff_active: dict[str, int] = defaultdict(int)
+    staff_durations: dict[str, list[float]] = defaultdict(list)
+    canonical_staff_emails: set[str] = set()
+
     def _resolve_received_ts(e: dict, kind: str) -> datetime | None:
-        """Resolve best available timestamp for assignment/completion receive time."""
+        """Resolve best available timestamp for assignment/completion time."""
         if kind == "assigned":
             ts = e.get("assigned_ts") or e.get("event_ts")
         else:
@@ -912,122 +896,112 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
 
         return _parse_ts(f"{date_str}T{time_str}") or _parse_ts(f"{date_str} {time_str}")
 
-    def _resolve_staff_email(e, et):
-        assigned_email = (e.get("assigned_to") or "").strip().lower()
-        if _is_staff(assigned_email):
-            return assigned_email
-        if et == "COMPLETED":
-            sender_email = (e.get("sender") or e.get("Sender") or "").strip().lower()
-            if _is_staff(sender_email):
-                return sender_email
-        return None
+    def _is_reconciliation_only(e: dict) -> bool:
+        event_type = (e.get("event_type") or "").strip().upper()
+        action = (e.get("action") or e.get("Action") or "").strip().upper()
+        return event_type.startswith("RECON") or action.startswith("RECON")
 
-    # For inferred durations on COMPLETED events that don't have duration_sec:
-    # earliest ASSIGNED timestamp per grouping key, sourced from all_events when available.
-    earliest_assigned_ts_by_key: dict[str, datetime] = {}
-    for e in (all_events if all_events is not None else filtered):
-        if e["event_type"] != "ASSIGNED":
-            continue
-        key = _resolve_group_key(e)
-        if not key:
-            continue
-        ts = _resolve_received_ts(e, "assigned")
-        if not ts:
-            continue
-        prev = earliest_assigned_ts_by_key.get(key)
-        if prev is None or ts < prev:
-            earliest_assigned_ts_by_key[key] = ts
+    def _is_canonical_kpi_event(e: dict) -> bool:
+        event_type = (e.get("event_type") or "").strip().upper()
+        if event_type == "CONFIG_CHANGED":
+            return False
+        if event_type not in ("ASSIGNED", "COMPLETED"):
+            return False
+        if _is_reconciliation_only(e):
+            return False
+        return bool(_resolve_sami_group_key(e))
 
-    # Fallback: per-staff ASSIGNED timestamps for nearest-preceding matching
-    # when msg_key matching is not possible.
-    staff_assigned_ts_queue: dict[str, list[datetime]] = defaultdict(list)
-    for e in (all_events if all_events is not None else filtered):
-        if e["event_type"] != "ASSIGNED":
-            continue
-        a_email = _resolve_staff_email(e, "ASSIGNED")
-        if not a_email:
-            continue
-        ts = _resolve_received_ts(e, "assigned")
-        if ts:
-            staff_assigned_ts_queue[a_email].append(ts)
-    for q in staff_assigned_ts_queue.values():
-        q.sort()
+    source_events = all_events if all_events is not None else filtered
 
-    # Pre-consume queue with completions BEFORE the filtered date range.
-    # Without this, a narrow filter (e.g. TODAY) leaves the queue full of
-    # old assignments, causing today's completions to match stale entries.
-    if date_start and all_events is not None:
-        for e in all_events:
-            if e["event_type"] != "COMPLETED":
-                continue
-            if (e.get("date") or "") >= date_start:
-                continue  # inside or after the range — leave for the main loop
-            email = _resolve_staff_email(e, "COMPLETED")
-            if not email:
-                continue
-            # Try grouping-key match first (no queue consumption needed)
-            key = _resolve_group_key(e)
-            if key and earliest_assigned_ts_by_key.get(key):
-                continue
+    # Canonical job lifecycle by SAMI: earliest ASSIGNED + earliest COMPLETED.
+    jobs: dict[str, dict[str, Any]] = {}
+    for e in source_events:
+        if not _is_canonical_kpi_event(e):
+            continue
+        key = _resolve_sami_group_key(e)
+        event_type = (e.get("event_type") or "").strip().upper()
+        job = jobs.setdefault(
+            key,
+            {
+                "has_assigned": False,
+                "has_completed": False,
+                "assigned_ts": None,
+                "completed_ts": None,
+                "assigned_event": None,
+            },
+        )
+
+        if event_type == "ASSIGNED":
+            job["has_assigned"] = True
+            assigned_ts = _resolve_received_ts(e, "assigned")
+            if assigned_ts and (job["assigned_ts"] is None or assigned_ts < job["assigned_ts"]):
+                job["assigned_ts"] = assigned_ts
+                job["assigned_event"] = e
+        elif event_type == "COMPLETED":
+            job["has_completed"] = True
             completed_ts = _resolve_received_ts(e, "completed")
-            if completed_ts and staff_assigned_ts_queue.get(email):
-                _pop_nearest_preceding(staff_assigned_ts_queue[email], completed_ts)
+            if completed_ts and (job["completed_ts"] is None or completed_ts < job["completed_ts"]):
+                job["completed_ts"] = completed_ts
 
+    # Per-range dedupe: a SAMI contributes at most once per metric in filtered range.
+    assigned_keys_in_range: set[str] = set()
+    completed_keys_in_range: set[str] = set()
     for e in filtered:
-        et = e["event_type"]
-        email = _resolve_staff_email(e, et)
-        if not email:
+        if not _is_canonical_kpi_event(e):
+            continue
+        key = _resolve_sami_group_key(e)
+        event_type = (e.get("event_type") or "").strip().upper()
+        if event_type == "ASSIGNED":
+            assigned_keys_in_range.add(key)
+        elif event_type == "COMPLETED":
+            completed_keys_in_range.add(key)
+
+    for key, job in jobs.items():
+        assigned_event = job.get("assigned_event")
+        if not assigned_event:
             continue
 
-        if et == "ASSIGNED":
-            staff_assigned[email] += 1
-        elif et == "COMPLETED":
-            staff_completed[email] += 1
-            dur = None
-            if e["duration_sec"] is not None and e["duration_sec"] > 0:
-                dur = e["duration_sec"]
-            else:
-                key = _resolve_group_key(e)
-                assigned_ts = earliest_assigned_ts_by_key.get(key) if key else None
-                completed_ts = _resolve_received_ts(e, "completed")
-                if assigned_ts and completed_ts:
-                    inferred_sec = _business_seconds(assigned_ts, completed_ts)
-                    if 0 < inferred_sec:
-                        dur = inferred_sec
-                elif completed_ts and staff_assigned_ts_queue.get(email):
-                    a_ts = _pop_nearest_preceding(staff_assigned_ts_queue[email], completed_ts)
-                    if a_ts is not None:
-                        delta = _business_seconds(a_ts, completed_ts)
-                        if 0 < delta:
-                            dur = delta
-            if dur is not None and dur <= _DURATION_HARD_CAP_SEC and dur <= _DURATION_MISMATCH_SEC:
-                staff_durations[email].append(dur)
-
-    # Track active count from ALL events using simple counts.
-    # (msg_keys differ between ASSIGNED and COMPLETED events so set
-    #  subtraction doesn't work — use count-based approach instead.)
-    staff_all_assigned: dict[str, int] = defaultdict(int)
-    staff_all_completed: dict[str, int] = defaultdict(int)
-
-    for e in (all_events if all_events is not None else filtered):
-        et = e["event_type"]
-        email = _resolve_staff_email(e, et)
-        if not email:
+        assigned_email = (assigned_event.get("assigned_to") or "").strip().lower()
+        if not _is_staff(assigned_email):
             continue
+        canonical_staff_emails.add(assigned_email)
 
-        if et == "ASSIGNED":
-            staff_all_assigned[email] += 1
-        elif et == "COMPLETED":
-            staff_all_completed[email] += 1
+        if key in assigned_keys_in_range:
+            staff_assigned[assigned_email] += 1
+        if key in completed_keys_in_range and job.get("has_completed"):
+            staff_completed[assigned_email] += 1
+        if job.get("has_assigned") and not job.get("has_completed"):
+            staff_active[assigned_email] += 1
 
-    all_emails = set(staff_assigned) | set(staff_completed) | set(staff_all_assigned)
-    if active_by_staff:
-        all_emails |= set(active_by_staff)
+        if key in completed_keys_in_range:
+            assigned_ts = job.get("assigned_ts")
+            completed_ts = job.get("completed_ts")
+            if assigned_ts and completed_ts:
+                dur = _business_seconds(assigned_ts, completed_ts)
+                if 0 < dur <= _DURATION_HARD_CAP_SEC and dur <= _DURATION_MISMATCH_SEC:
+                    staff_durations[assigned_email].append(dur)
+
+    canonical_active_by_staff: dict[str, int] = {}
+    if external_active_by_staff:
+        canonical_active_by_staff = {
+            email: count
+            for email, count in active_by_staff.items()
+            if count > 0 and email in canonical_staff_emails
+        }
+
+    all_emails = set(staff_assigned) | set(staff_completed)
+    if external_active_by_staff:
+        all_emails |= set(canonical_active_by_staff)
+    else:
+        all_emails |= set(staff_active)
     result = []
     for email in sorted(all_emails):
         assigned = staff_assigned.get(email, 0)
         completed = staff_completed.get(email, 0)
-        active = active_by_staff.get(email, 0)
+        if external_active_by_staff:
+            active = canonical_active_by_staff.get(email, 0)
+        else:
+            active = staff_active.get(email, 0)
 
         durations_min = sorted([d / 60.0 for d in staff_durations.get(email, [])])
         median_min = round(_median(durations_min), 1) if durations_min else None
@@ -1049,7 +1023,6 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
 
     result.sort(key=lambda x: (-x["assigned"], x["name"]))
     return result
-
 
 def _compute_hourly(events: list[dict]) -> dict[str, dict[str, int]]:
     """Hourly breakdown: {hour: {assigned: N, completed: N}}."""
@@ -1321,3 +1294,4 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
             "risk_level": e["risk_level"],
         })
     return result
+

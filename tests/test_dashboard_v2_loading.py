@@ -1,4 +1,5 @@
 import unittest
+import asyncio
 from pathlib import Path
 import shutil
 import uuid
@@ -36,6 +37,38 @@ class DashboardV2LoadingTests(unittest.TestCase):
             server.config, "DAILY_STATS_V2_CSV", v2
         ):
             self.assertEqual(server._resolve_stats_csv_path(), legacy)
+
+    def test_dashboard_does_not_emit_sami_mismatch_warning(self):
+        rows = [
+            {
+                "Date": "2026-02-17",
+                "Time": "10:00:00",
+                "Subject": "Image transfer request",
+                "event_type": "ASSIGNED",
+                "assigned_to": "brian.shaw@sa.gov.au",
+                "Sender": "requester@example.com",
+                "sami_id": "SAMI-ABC123",
+            },
+            {
+                "Date": "2026-02-17",
+                "Time": "10:15:00",
+                "Subject": "[COMPLETED] [SAMI-ABC123] done",
+                "event_type": "COMPLETED",
+                "Action": "STAFF_COMPLETED_CONFIRMATION",
+                "assigned_to": "completed",
+                "Sender": "brian.shaw@sa.gov.au",
+                "sami_id": "SAMI-XYZ999",
+            },
+        ]
+
+        with patch("dashboard.backend.server.load_csv", return_value=(rows, None)), patch(
+            "dashboard.backend.server.load_json", return_value=(None, None)
+        ), patch("dashboard.backend.server._load_staff_json", return_value=({"staff": []}, None)), patch(
+            "dashboard.backend.server.load_reconciled_set", return_value=set()
+        ):
+            payload = asyncio.run(server.dashboard_endpoint(date_start="2026-02-17", date_end="2026-02-17"))
+
+        self.assertNotIn("warning", payload)
 
 
 if __name__ == "__main__":

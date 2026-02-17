@@ -693,14 +693,6 @@ def resolve_completion_sami_context(ledger, conversation_id, subject):
     ledger = ledger or {}
     conversation_id = "" if conversation_id is None else str(conversation_id).strip()
 
-    if conversation_id:
-        conversation_key = find_ledger_key_by_conversation_id(ledger, conversation_id)
-        if conversation_key:
-            entry = ledger.get(conversation_key, {})
-            resolved_sami = "" if not isinstance(entry, dict) else str(entry.get("sami_id") or "").strip()
-            if resolved_sami:
-                return resolved_sami, conversation_key, "conversation_id"
-
     subject_sami = extract_sami_id_from_subject(subject)
     if subject_sami:
         sami_key = find_ledger_key_by_sami_id(ledger, subject_sami)
@@ -710,6 +702,14 @@ def resolve_completion_sami_context(ledger, conversation_id, subject):
             if resolved_sami:
                 return resolved_sami, sami_key, "subject_sami_id"
         return subject_sami, None, "subject_sami_token"
+
+    if conversation_id:
+        conversation_key = find_ledger_key_by_conversation_id(ledger, conversation_id)
+        if conversation_key:
+            entry = ledger.get(conversation_key, {})
+            resolved_sami = "" if not isinstance(entry, dict) else str(entry.get("sami_id") or "").strip()
+            if resolved_sami:
+                return resolved_sami, conversation_key, "conversation_id"
 
     return "", None, "no_match"
 
@@ -3237,12 +3237,14 @@ def process_inbox():
                         staff_sender_flag = sender_email in staff_list
                         keyword_hit = is_completion_subject(subject)
                         if staff_sender_flag and keyword_hit:
-                            resolved_sami_id, _, _ = resolve_completion_sami_context(
+                            resolved_sami_id, context_key, context_source = resolve_completion_sami_context(
                                 processed_ledger,
                                 conversation_id,
                                 subject
                             )
-                            if conversation_id:
+                            if context_key:
+                                match_key = context_key
+                            elif conversation_id and context_source not in ("subject_sami_id", "subject_sami_token"):
                                 match_key = find_ledger_key_by_conversation_id(processed_ledger, conversation_id)
                             else:
                                 match_key = None
@@ -3260,7 +3262,7 @@ def process_inbox():
                                     domain_bucket,
                                     "COMPLETION_SUBJECT_KEYWORD",
                                     policy_source,
-                                    sami_id=processed_ledger.get(match_key, {}).get("sami_id", "") or resolved_sami_id
+                                    sami_id=resolved_sami_id or processed_ledger.get(match_key, {}).get("sami_id", "")
                                 )
                                 if not save_processed_ledger(processed_ledger):
                                     log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
@@ -3311,12 +3313,14 @@ def process_inbox():
                                 continue
                         is_reply = subject.lower().strip().startswith("re:")
                         if completion_cc_enabled and staff_sender_flag and is_reply and message_has_completion_cc(msg, effective_completion_cc):
-                            resolved_sami_id, _, _ = resolve_completion_sami_context(
+                            resolved_sami_id, context_key, context_source = resolve_completion_sami_context(
                                 processed_ledger,
                                 conversation_id,
                                 subject
                             )
-                            if conversation_id:
+                            if context_key:
+                                match_key = context_key
+                            elif conversation_id and context_source not in ("subject_sami_id", "subject_sami_token"):
                                 match_key = find_ledger_key_by_conversation_id(processed_ledger, conversation_id)
                             else:
                                 match_key = None
@@ -3327,7 +3331,7 @@ def process_inbox():
                                 entry["completion_source"] = "reply_all_cc"
                                 entry["completion_subject"] = subject
                                 processed_ledger[match_key] = entry
-                                append_stats(subject, "completed", sender_email, "COMPLETION_MATCHED", domain_bucket, "COMPLETION_MATCHED", policy_source, event_type="COMPLETED", sami_id=processed_ledger.get(match_key, {}).get("sami_id", "") or resolved_sami_id)
+                                append_stats(subject, "completed", sender_email, "COMPLETION_MATCHED", domain_bucket, "COMPLETION_MATCHED", policy_source, event_type="COMPLETED", sami_id=resolved_sami_id or processed_ledger.get(match_key, {}).get("sami_id", ""))
                             else:
                                 append_stats(subject, "completed", sender_email, "COMPLETION_UNMATCHED", domain_bucket, "COMPLETION_UNMATCHED", policy_source, event_type="COMPLETED", sami_id=resolved_sami_id)
                             if not save_processed_ledger(processed_ledger):

@@ -144,14 +144,7 @@ def _normalize_sami_lookup(raw: str) -> str:
 
 
 def _row_sami_ref(row: dict) -> str:
-    sami_id = _normalize_sami_lookup((row.get("sami_id") or ""))
-    if sami_id:
-        return sami_id
-    subject = (row.get("Subject") or "").strip()
-    m = _SAMI_SUBJECT_RE.search(subject)
-    if not m:
-        return ""
-    return f"SAMI-{m.group(1).upper()}"
+    return _normalize_sami_lookup((row.get("sami_id") or ""))
 
 
 def _filter_rows_by_sami_ref(rows: list[dict] | None, sami_ref: str) -> list[dict]:
@@ -159,6 +152,36 @@ def _filter_rows_by_sami_ref(rows: list[dict] | None, sami_ref: str) -> list[dic
     if not target or not rows:
         return []
     return [row for row in rows if _row_sami_ref(row) == target]
+
+
+def _subject_sami_ref(row: dict) -> str:
+    subject = (row.get("Subject") or "").strip()
+    m = _SAMI_SUBJECT_RE.search(subject)
+    if not m:
+        return ""
+    return f"SAMI-{m.group(1).upper()}"
+
+
+def _is_completed_row(raw_row: dict) -> bool:
+    event_type = (raw_row.get("event_type") or "").strip().upper()
+    if event_type == "COMPLETED":
+        return True
+    action = (raw_row.get("Action") or "").strip().upper()
+    return action in _COMPLETION_ACTIONS
+
+
+def _count_completed_sami_mismatches(rows: list[dict] | None) -> int:
+    if not rows:
+        return 0
+    mismatches = 0
+    for row in rows:
+        if not _is_completed_row(row):
+            continue
+        sid = _row_sami_ref(row)
+        ssubj = _subject_sami_ref(row)
+        if sid and ssubj and sid != ssubj:
+            mismatches += 1
+    return mismatches
 
 
 def _normalize_event_type_for_audit(row: dict) -> str:
@@ -252,8 +275,6 @@ def _collect_row_fieldnames(rows: list[dict]) -> list[str]:
 def _row_sami_source(row: dict) -> str:
     if _normalize_sami_lookup((row.get("sami_id") or "")):
         return "sami_id"
-    if _SAMI_SUBJECT_RE.search((row.get("Subject") or "").strip()):
-        return "subject"
     return ""
 
 
@@ -280,6 +301,8 @@ def _build_sami_audit_csv(rows: list[dict] | None, sami_ref: str) -> tuple[list[
             "Audit Elapsed Minutes",
             "Audit Staff Email",
             "Audit Row SAMI Source",
+            "Audit Subject SAMI Ref",
+            "Audit SAMI Mismatch",
             "Audit Resolved Event TS",
             "Audit Matched By",
         ]
@@ -366,6 +389,8 @@ def _build_sami_audit_csv(rows: list[dict] | None, sami_ref: str) -> tuple[list[
         "Audit Follow Up",
         "Audit Staff Email",
         "Audit Row SAMI Source",
+        "Audit Subject SAMI Ref",
+        "Audit SAMI Mismatch",
         "Audit Resolved Event TS",
         "Audit Matched By",
     ]
@@ -392,8 +417,10 @@ def _build_sami_audit_csv(rows: list[dict] | None, sami_ref: str) -> tuple[list[
             "Audit Follow Up": "yes" if item.get("_follow_up") else "no",
             "Audit Staff Email": item.get("_staff_email") or "",
             "Audit Row SAMI Source": _row_sami_source(raw_row),
+            "Audit Subject SAMI Ref": _subject_sami_ref(raw_row),
+            "Audit SAMI Mismatch": "yes" if (_row_sami_ref(raw_row) and _subject_sami_ref(raw_row) and _row_sami_ref(raw_row) != _subject_sami_ref(raw_row)) else "no",
             "Audit Resolved Event TS": _format_audit_ts(item.get("_event_ts")),
-            "Audit Matched By": "sami_id_or_subject",
+            "Audit Matched By": "sami_id",
         }
         for key in raw_fieldnames:
             out[key] = raw_row.get(key, "")
@@ -788,8 +815,11 @@ async def dashboard_endpoint(date_start: str | None = None, date_end: str | None
     payload = compute_dashboard(rows, roster, settings, staff_list, hib_state,
                                 date_start=date_start, date_end=date_end,
                                 staff_filter=staff, reconciled_set=rec_set)
+    warnings: list[str] = []
     if csv_err:
-        payload["warning"] = csv_err
+        warnings.append(csv_err)
+    if warnings:
+        payload["warning"] = " | ".join(warnings)
     return payload
 
 
