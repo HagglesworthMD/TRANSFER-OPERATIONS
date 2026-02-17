@@ -885,6 +885,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     staff_assigned: dict[str, int] = defaultdict(int)
     staff_completed: dict[str, int] = defaultdict(int)
     staff_durations: dict[str, list[float]] = defaultdict(list)
+    active_by_staff = active_by_staff or {}
 
     def _resolve_received_ts(e: dict, kind: str) -> datetime | None:
         """Resolve best available timestamp for assignment/completion receive time."""
@@ -1019,12 +1020,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     for email in sorted(all_emails):
         assigned = staff_assigned.get(email, 0)
         completed = staff_completed.get(email, 0)
-        if active_by_staff is not None:
-            active = active_by_staff.get(email, 0)
-        else:
-            # Backward-compatible fallback path.
-            reconciled_adj = reconciled_per_staff.get(email, 0) if reconciled_per_staff else 0
-            active = max(0, assigned - completed - reconciled_adj)
+        active = active_by_staff.get(email, 0)
 
         durations_min = sorted([d / 60.0 for d in staff_durations.get(email, [])])
         median_min = round(_median(durations_min), 1) if durations_min else None
