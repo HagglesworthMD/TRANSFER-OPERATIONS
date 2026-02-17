@@ -17,6 +17,8 @@ from . import config
 logger = logging.getLogger(__name__)
 
 _SAMI_REF_RE = re.compile(r"\[SAMI-([A-Z0-9]+)\]", re.IGNORECASE)
+_SAMI_TAG_RE = re.compile(r"\[SAMI-[A-Z0-9]+\]", re.IGNORECASE)
+_COMPLETED_TAG_RE = re.compile(r"\[COMPLETED\]", re.IGNORECASE)
 
 
 
@@ -440,6 +442,29 @@ def _extract_sami_ref(subject: str) -> str:
     return f"SAMI-{m.group(1).upper()}"
 
 
+def _normalise_subject_for_completion_match(subject: str) -> str:
+    """Normalise subject for fallback assignment↔completion matching."""
+    s = (subject or "").strip()
+    if not s:
+        return ""
+    # Strip common reply/forward prefixes.
+    while True:
+        lowered = s.lower()
+        if lowered.startswith("re:"):
+            s = s[3:].strip()
+            continue
+        if lowered.startswith("fw:"):
+            s = s[3:].strip()
+            continue
+        if lowered.startswith("fwd:"):
+            s = s[4:].strip()
+            continue
+        break
+    s = _COMPLETED_TAG_RE.sub(" ", s)
+    s = _SAMI_TAG_RE.sub(" ", s)
+    return " ".join(s.lower().split())
+
+
 def export_active_events(rows: list[dict], date_start: str, date_end: str,
                          staff_name: str | None = None,
                          reconciled_set: set[str] | None = None) -> list[dict]:
@@ -451,6 +476,7 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
 
     completed_refs: set[str] = set()
     completed_msg_keys: set[str] = set()
+    completed_subject_ts: dict[tuple[str, str], list[datetime]] = defaultdict(list)
     for e in events:
         if e.get("event_type") != "COMPLETED":
             continue
@@ -462,6 +488,16 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
         msg_key = (e.get("msg_key") or "").strip().lower()
         if msg_key:
             completed_msg_keys.add(msg_key)
+        staff_email = (e.get("sender") or "").strip().lower()
+        if not _is_staff(staff_email):
+            staff_email = (e.get("assigned_to") or "").strip().lower()
+        if _is_staff(staff_email):
+            subj_key = _normalise_subject_for_completion_match(e.get("subject") or "")
+            cts = e.get("event_ts")
+            if subj_key and cts:
+                completed_subject_ts[(staff_email, subj_key)].append(cts)
+    for queue in completed_subject_ts.values():
+        queue.sort()
 
     latest_by_identity: dict[str, dict] = {}
     for e in filtered:
@@ -479,14 +515,24 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
         subject = e.get("subject") or ""
         sami_ref = _extract_sami_ref(subject)
         msg_key = (e.get("msg_key") or "").strip().lower()
+        current_ts = e.get("event_ts")
 
         if sami_ref and sami_ref in completed_refs:
             continue
-        if (not sami_ref) and msg_key and msg_key in completed_msg_keys:
-            continue
+        if not sami_ref:
+            if msg_key and msg_key in completed_msg_keys:
+                continue
+            # Fallback matcher for rows without SAMI refs when msg_key variants differ.
+            subj_key = _normalise_subject_for_completion_match(subject)
+            if subj_key and current_ts:
+                queue = completed_subject_ts.get((staff_email, subj_key))
+                if queue:
+                    idx = bisect.bisect_left(queue, current_ts)
+                    if idx < len(queue):
+                        queue.pop(idx)
+                        continue
 
         identity = sami_ref or (f"msg:{msg_key}" if msg_key else f"{e.get('date','')}|{e.get('time','')}|{staff_email}|{subject[:40]}")
-        current_ts = e.get("event_ts")
 
         existing = latest_by_identity.get(identity)
         if existing is not None:
@@ -556,26 +602,16 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     processed = len([e for e in filtered if e["event_type"] == "ASSIGNED"])
     completions = len([e for e in filtered if e["event_type"] == "COMPLETED"])
 
-    # Build active count from filtered events to match date range.
-    # Use count-based approach (msg_keys differ between ASSIGNED/COMPLETED).
-    total_assigned_by_staff: dict[str, int] = defaultdict(int)
-    total_completed_by_staff: dict[str, int] = defaultdict(int)
-
-    for e in filtered:
-        if e["event_type"] == "ASSIGNED":
-            email = (e.get("assigned_to") or "").strip().lower()
-            if _is_staff(email):
-                total_assigned_by_staff[email] += 1
-        elif e["event_type"] == "COMPLETED":
-            email = (e.get("sender") or "").strip().lower()
-            if not _is_staff(email):
-                email = (e.get("assigned_to") or "").strip().lower()
-            if _is_staff(email):
-                total_completed_by_staff[email] += 1
-
-    active_count = 0
-    for staff in set(total_assigned_by_staff) | set(total_completed_by_staff):
-        active_count += max(0, total_assigned_by_staff.get(staff, 0) - total_completed_by_staff.get(staff, 0))
+    # Keep summary active_count in parity with /api/active modal output.
+    active_rows = export_active_events(
+        rows, ds, de, staff_name=staff_filter, reconciled_set=reconciled_set
+    )
+    active_count = len(active_rows)
+    active_by_staff: dict[str, int] = defaultdict(int)
+    for row in active_rows:
+        email = (row.get("Staff Email") or "").strip().lower()
+        if _is_staff(email):
+            active_by_staff[email] += 1
 
     active_staff = len(staff_list) if staff_list else 0
 
@@ -702,7 +738,6 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     }
 
     # ── Per-staff KPIs (filtered range for counts, all events for active) ──
-    # Apply reconciliation adjustment to summary active_count
     _reconciled_per_staff: dict[str, int] | None = None
     if reconciled_set:
         from .reconciliation import load_reconciled
@@ -713,12 +748,15 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
             if email:
                 _rps[email] += 1
         _reconciled_per_staff = _rps
-        # Adjust summary active_count to match staff KPI table
-        active_count = max(0, active_count - sum(_rps.values()))
-        summary["active_count"] = active_count
 
-    staff_kpis = _compute_staff_kpis(filtered, events, date_start=ds, date_end=de,
-                                     reconciled_per_staff=_reconciled_per_staff)
+    staff_kpis = _compute_staff_kpis(
+        filtered,
+        events,
+        date_start=ds,
+        date_end=de,
+        reconciled_per_staff=_reconciled_per_staff,
+        active_by_staff=active_by_staff,
+    )
 
     # ── Hourly activity ──
     hourly = _compute_hourly(filtered)
@@ -819,7 +857,8 @@ def _compute_requestor_distribution(events: list[dict], top_n: int = 15) -> dict
 def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = None,
                         date_start: str | None = None,
                         date_end: str | None = None,
-                        reconciled_per_staff: dict[str, int] | None = None) -> list[dict]:
+                        reconciled_per_staff: dict[str, int] | None = None,
+                        active_by_staff: dict[str, int] | None = None) -> list[dict]:
     """Per-staff KPI table data.
 
     *filtered* is the date-range subset (for assigned/completed counts).
@@ -960,13 +999,18 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             staff_all_completed[email] += 1
 
     all_emails = set(staff_assigned) | set(staff_completed) | set(staff_all_assigned)
+    if active_by_staff:
+        all_emails |= set(active_by_staff)
     result = []
     for email in sorted(all_emails):
         assigned = staff_assigned.get(email, 0)
         completed = staff_completed.get(email, 0)
-        # Subtract reconciled items (filtered BEFORE final count)
-        reconciled_adj = reconciled_per_staff.get(email, 0) if reconciled_per_staff else 0
-        active = max(0, assigned - completed - reconciled_adj)
+        if active_by_staff is not None:
+            active = active_by_staff.get(email, 0)
+        else:
+            # Backward-compatible fallback path.
+            reconciled_adj = reconciled_per_staff.get(email, 0) if reconciled_per_staff else 0
+            active = max(0, assigned - completed - reconciled_adj)
 
         durations_min = sorted([d / 60.0 for d in staff_durations.get(email, [])])
         median_min = round(_median(durations_min), 1) if durations_min else None
