@@ -285,6 +285,7 @@ def build_critical_one_liner(orig_subject, sla_minutes, reasons):
 
 _re_assigned = re.compile(r"\[Assigned:\s*[^]]+\]", re.IGNORECASE)
 _re_critical = re.compile(r"\[CRITICAL\]", re.IGNORECASE)
+_re_sami_id = re.compile(r"\bSAMI-[A-Z0-9]+\b", re.IGNORECASE)
 
 def strip_bot_subject_tags(subject):
     if not subject:
@@ -653,12 +654,64 @@ def message_has_completion_cc(msg, target_addr):
     return False
 
 def find_ledger_key_by_conversation_id(ledger, conversation_id):
+    ledger = ledger or {}
+    conversation_id = "" if conversation_id is None else str(conversation_id).strip()
     if not conversation_id:
         return None
     for key, entry in ledger.items():
-        if isinstance(entry, dict) and entry.get("conversation_id") == conversation_id:
+        if not isinstance(entry, dict):
+            continue
+        entry_cid = "" if entry.get("conversation_id") is None else str(entry.get("conversation_id")).strip()
+        if entry_cid == conversation_id:
             return key
     return None
+
+def extract_sami_id_from_subject(subject):
+    text = "" if subject is None else str(subject)
+    if not text:
+        return ""
+    match = _re_sami_id.search(text)
+    if not match:
+        return ""
+    return match.group(0).upper().strip()
+
+def find_ledger_key_by_sami_id(ledger, sami_id):
+    ledger = ledger or {}
+    sami_id = "" if sami_id is None else str(sami_id).strip()
+    if not sami_id:
+        return None
+    sami_id = sami_id.upper()
+    for key, entry in ledger.items():
+        if not isinstance(entry, dict):
+            continue
+        entry_sid = "" if entry.get("sami_id") is None else str(entry.get("sami_id")).strip()
+        if entry_sid and entry_sid.upper() == sami_id:
+            return key
+    return None
+
+def resolve_completion_sami_context(ledger, conversation_id, subject):
+    ledger = ledger or {}
+    conversation_id = "" if conversation_id is None else str(conversation_id).strip()
+
+    if conversation_id:
+        conversation_key = find_ledger_key_by_conversation_id(ledger, conversation_id)
+        if conversation_key:
+            entry = ledger.get(conversation_key, {})
+            resolved_sami = "" if not isinstance(entry, dict) else str(entry.get("sami_id") or "").strip()
+            if resolved_sami:
+                return resolved_sami, conversation_key, "conversation_id"
+
+    subject_sami = extract_sami_id_from_subject(subject)
+    if subject_sami:
+        sami_key = find_ledger_key_by_sami_id(ledger, subject_sami)
+        if sami_key:
+            entry = ledger.get(sami_key, {})
+            resolved_sami = "" if not isinstance(entry, dict) else str(entry.get("sami_id") or "").strip()
+            if resolved_sami:
+                return resolved_sami, sami_key, "subject_sami_id"
+        return subject_sami, None, "subject_sami_token"
+
+    return "", None, "no_match"
 
 def compute_message_identity(msg, sender_email, subject, received_iso):
     entry_id = None
@@ -3184,6 +3237,11 @@ def process_inbox():
                         staff_sender_flag = sender_email in staff_list
                         keyword_hit = is_completion_subject(subject)
                         if staff_sender_flag and keyword_hit:
+                            resolved_sami_id, _, _ = resolve_completion_sami_context(
+                                processed_ledger,
+                                conversation_id,
+                                subject
+                            )
                             if conversation_id:
                                 match_key = find_ledger_key_by_conversation_id(processed_ledger, conversation_id)
                             else:
@@ -3202,7 +3260,7 @@ def process_inbox():
                                     domain_bucket,
                                     "COMPLETION_SUBJECT_KEYWORD",
                                     policy_source,
-                                    sami_id=processed_ledger.get(match_key, {}).get("sami_id", "")
+                                    sami_id=processed_ledger.get(match_key, {}).get("sami_id", "") or resolved_sami_id
                                 )
                                 if not save_processed_ledger(processed_ledger):
                                     log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
@@ -3225,7 +3283,7 @@ def process_inbox():
                                     "assigned_to": "completed",
                                     "risk": "normal",
                                     "completion_source": "staff_completed_confirmation",
-                                    "sami_id": compute_sami_id(msg) or "",
+                                    "sami_id": resolved_sami_id,
                                 }
                                 if identity.get("entry_id"):
                                     processed_ledger[message_key]["entry_id"] = identity["entry_id"]
@@ -3235,7 +3293,7 @@ def process_inbox():
                                     processed_ledger[message_key]["internet_message_id"] = identity["internet_message_id"]
                                 if conversation_id:
                                     processed_ledger[message_key]["conversation_id"] = conversation_id
-                                append_stats(subject, "completed", sender_email, "normal", domain_bucket, "STAFF_COMPLETED_CONFIRMATION", policy_source, event_type="COMPLETED", msg_key=message_key, sami_id=processed_ledger.get(message_key, {}).get("sami_id", ""))
+                                append_stats(subject, "completed", sender_email, "normal", domain_bucket, "STAFF_COMPLETED_CONFIRMATION", policy_source, event_type="COMPLETED", msg_key=message_key, sami_id=resolved_sami_id)
                                 if not save_processed_ledger(processed_ledger):
                                     log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
                                     errors_count += 1
@@ -3253,6 +3311,11 @@ def process_inbox():
                                 continue
                         is_reply = subject.lower().strip().startswith("re:")
                         if completion_cc_enabled and staff_sender_flag and is_reply and message_has_completion_cc(msg, effective_completion_cc):
+                            resolved_sami_id, _, _ = resolve_completion_sami_context(
+                                processed_ledger,
+                                conversation_id,
+                                subject
+                            )
                             if conversation_id:
                                 match_key = find_ledger_key_by_conversation_id(processed_ledger, conversation_id)
                             else:
@@ -3264,9 +3327,9 @@ def process_inbox():
                                 entry["completion_source"] = "reply_all_cc"
                                 entry["completion_subject"] = subject
                                 processed_ledger[match_key] = entry
-                                append_stats(subject, "completed", sender_email, "COMPLETION_MATCHED", domain_bucket, "COMPLETION_MATCHED", policy_source, event_type="COMPLETED", sami_id=processed_ledger.get(match_key, {}).get("sami_id", ""))
+                                append_stats(subject, "completed", sender_email, "COMPLETION_MATCHED", domain_bucket, "COMPLETION_MATCHED", policy_source, event_type="COMPLETED", sami_id=processed_ledger.get(match_key, {}).get("sami_id", "") or resolved_sami_id)
                             else:
-                                append_stats(subject, "completed", sender_email, "COMPLETION_UNMATCHED", domain_bucket, "COMPLETION_UNMATCHED", policy_source, event_type="COMPLETED")
+                                append_stats(subject, "completed", sender_email, "COMPLETION_UNMATCHED", domain_bucket, "COMPLETION_UNMATCHED", policy_source, event_type="COMPLETED", sami_id=resolved_sami_id)
                             if not save_processed_ledger(processed_ledger):
                                 log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
                                 errors_count += 1
