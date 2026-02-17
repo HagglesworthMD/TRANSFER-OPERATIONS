@@ -994,6 +994,22 @@ body {
     box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
 }
 
+.sami-search-input {
+    width: 170px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    background: var(--bg-soft);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+    font-family: var(--font-mono);
+}
+
+.sami-search-input:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+}
+
 .clear-filter-btn {
     padding: 6px 12px;
     background: var(--bg-secondary);

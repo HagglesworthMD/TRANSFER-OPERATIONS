@@ -32,6 +32,8 @@ const ActivityFeed = {
         }
 
         const showActiveBtn = document.getElementById('show-active-btn');
+        const samiSearchInput = document.getElementById('sami-search-input');
+        const samiExportBtn = document.getElementById('sami-export-btn');
         const activeCloseBtn = document.getElementById('active-close-btn');
         const activeBackdrop = document.getElementById('active-modal-backdrop');
         const activeDownloadBtn = document.getElementById('active-download-btn');
@@ -54,6 +56,28 @@ const ActivityFeed = {
                 const params = this._activeParams || this._currentDateParams();
                 const url = DashboardAPI.getActiveCsvUrl(params);
                 window.open(url, '_blank');
+            });
+        }
+        const runSamiExport = () => {
+            if (!samiSearchInput) return;
+            const samiRef = (samiSearchInput.value || '').trim();
+            if (!samiRef) {
+                alert('Enter a SAMI code first (e.g. SAMI-ABC123).');
+                samiSearchInput.focus();
+                return;
+            }
+            const url = DashboardAPI.getSamiCsvUrl(samiRef);
+            window.open(url, '_blank');
+        };
+        if (samiExportBtn) {
+            samiExportBtn.addEventListener('click', runSamiExport);
+        }
+        if (samiSearchInput) {
+            samiSearchInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    runSamiExport();
+                }
             });
         }
 

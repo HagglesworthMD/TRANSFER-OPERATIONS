@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import uvicorn
@@ -41,6 +42,17 @@ _DEFAULT_FOLDERS: dict[str, str] = {
     "quarantine": "03_QUARANTINE",
     "hold": "04_HIB",
     "system_notification": "05_SYSTEM_NOTIFICATIONS",
+}
+
+_SAMI_LOOKUP_RE = re.compile(r"SAMI-([A-Z0-9]+)", re.IGNORECASE)
+_SAMI_SUBJECT_RE = re.compile(r"\[SAMI-([A-Z0-9]+)\]", re.IGNORECASE)
+_COMPLETION_ACTIONS = {
+    "STAFF_COMPLETED_CONFIRMATION",
+    "COMPLETION_SUBJECT_KEYWORD",
+    "COMPLETION_MATCHED",
+    "COMPLETION_UNMATCHED",
+    "COMPLETION_LINKED_TO_ASSIGNMENT",
+    "COMPLETION_NOT_LINKED_TO_ASSIGNMENT",
 }
 
 
@@ -116,6 +128,278 @@ def _resolve_stats_csv_path() -> Path:
     if config.DAILY_STATS_V2_CSV.exists():
         return config.DAILY_STATS_V2_CSV
     return config.DAILY_STATS_CSV
+
+
+def _normalize_sami_lookup(raw: str) -> str:
+    s = (raw or "").strip()
+    if not s:
+        return ""
+    m = _SAMI_LOOKUP_RE.search(s)
+    if m:
+        return f"SAMI-{m.group(1).upper()}"
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", s)
+    if not cleaned:
+        return ""
+    return f"SAMI-{cleaned.upper()}"
+
+
+def _row_sami_ref(row: dict) -> str:
+    sami_id = _normalize_sami_lookup((row.get("sami_id") or ""))
+    if sami_id:
+        return sami_id
+    subject = (row.get("Subject") or "").strip()
+    m = _SAMI_SUBJECT_RE.search(subject)
+    if not m:
+        return ""
+    return f"SAMI-{m.group(1).upper()}"
+
+
+def _filter_rows_by_sami_ref(rows: list[dict] | None, sami_ref: str) -> list[dict]:
+    target = _normalize_sami_lookup(sami_ref)
+    if not target or not rows:
+        return []
+    return [row for row in rows if _row_sami_ref(row) == target]
+
+
+def _normalize_event_type_for_audit(row: dict) -> str:
+    event_type = (row.get("event_type") or "").strip().upper()
+    if event_type:
+        return event_type
+    action = (row.get("Action") or "").strip().upper()
+    if action in _COMPLETION_ACTIONS:
+        return "COMPLETED"
+    if (row.get("assigned_to") or row.get("Assigned To") or "").strip():
+        return "ASSIGNED"
+    return ""
+
+
+def _parse_audit_ts(raw: str) -> datetime | None:
+    s = (raw or "").strip()
+    if not s:
+        return None
+    s = s.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+def _parse_audit_date_time(date_raw: str, time_raw: str) -> datetime | None:
+    date_s = (date_raw or "").strip()
+    time_s = (time_raw or "").strip()
+    if not date_s or not time_s:
+        return None
+    return _parse_audit_ts(f"{date_s}T{time_s}") or _parse_audit_ts(f"{date_s} {time_s}")
+
+
+def _resolve_event_ts_for_audit(row: dict, event_type: str) -> datetime | None:
+    assigned_ts = _parse_audit_ts(row.get("assigned_ts") or "")
+    completed_ts = _parse_audit_ts(row.get("completed_ts") or "")
+    date_time_ts = _parse_audit_date_time(row.get("Date") or "", row.get("Time") or "")
+
+    if event_type == "COMPLETED":
+        return completed_ts or date_time_ts or assigned_ts
+    if event_type == "ASSIGNED":
+        return assigned_ts or date_time_ts or completed_ts
+    return date_time_ts or assigned_ts or completed_ts
+
+
+def _format_audit_ts(ts: datetime | None) -> str:
+    if not ts:
+        return ""
+    return ts.isoformat(timespec="seconds")
+
+
+def _seconds_between(start: datetime | None, end: datetime | None) -> float | None:
+    if not start or not end:
+        return None
+    try:
+        return (end - start).total_seconds()
+    except TypeError:
+        return (end.replace(tzinfo=None) - start.replace(tzinfo=None)).total_seconds()
+
+
+def _resolve_audit_staff_email(row: dict, event_type: str) -> str:
+    staff = (row.get("assigned_to") or row.get("Assigned To") or "").strip().lower()
+    sender = (row.get("Sender") or "").strip().lower()
+    if event_type == "COMPLETED" and (not staff or staff in config.NON_STAFF_ASSIGNEES):
+        return sender
+    return staff or sender
+
+
+def _is_follow_up_event(row: dict, event_type: str) -> bool:
+    if event_type in ("ASSIGNED", "COMPLETED"):
+        return False
+    action = (row.get("Action") or "").strip().upper()
+    subject = (row.get("Subject") or "").strip().lower()
+    if "FOLLOW" in action or "REPLY" in action:
+        return True
+    return subject.startswith("re:") or subject.startswith("fw:") or subject.startswith("fwd:")
+
+
+def _collect_row_fieldnames(rows: list[dict]) -> list[str]:
+    fieldnames: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row.keys():
+            if key in seen:
+                continue
+            seen.add(key)
+            fieldnames.append(key)
+    return fieldnames
+
+
+def _row_sami_source(row: dict) -> str:
+    if _normalize_sami_lookup((row.get("sami_id") or "")):
+        return "sami_id"
+    if _SAMI_SUBJECT_RE.search((row.get("Subject") or "").strip()):
+        return "subject"
+    return ""
+
+
+def _build_sami_audit_csv(rows: list[dict] | None, sami_ref: str) -> tuple[list[dict], list[str]]:
+    matched = _filter_rows_by_sami_ref(rows, sami_ref)
+    raw_fieldnames = _collect_row_fieldnames(matched)
+    if not matched:
+        audit_fields = [
+            "Audit SAMI Ref",
+            "Manager Assigned TS",
+            "Manager Completed TS",
+            "Manager Assigned -> Completed (mins)",
+            "Audit Event Seq",
+            "Audit Event Type",
+            "Audit Action",
+            "Audit Follow Up",
+            "Audit Lifecycle Status",
+            "Audit Total Events",
+            "Audit Assigned Count",
+            "Audit Completed Count",
+            "Audit Follow Up Count",
+            "Audit First Assigned TS",
+            "Audit Last Completed TS",
+            "Audit Elapsed Minutes",
+            "Audit Staff Email",
+            "Audit Row SAMI Source",
+            "Audit Resolved Event TS",
+            "Audit Matched By",
+        ]
+        return [], audit_fields
+
+    staged: list[dict] = []
+    for i, row in enumerate(matched):
+        event_type = _normalize_event_type_for_audit(row)
+        event_ts = _resolve_event_ts_for_audit(row, event_type)
+        staged.append({
+            "_row_index": i,
+            "_event_type": event_type,
+            "_event_ts": event_ts,
+            "_follow_up": _is_follow_up_event(row, event_type),
+            "_staff_email": _resolve_audit_staff_email(row, event_type),
+            "_raw_row": row,
+        })
+
+    def _sort_key(item: dict):
+        ts = item.get("_event_ts")
+        if ts is None:
+            ts_key = (1, "")
+        else:
+            ts_key = (0, _format_audit_ts(ts))
+        row = item.get("_raw_row") or {}
+        return (
+            ts_key[0],
+            ts_key[1],
+            (row.get("Date") or ""),
+            (row.get("Time") or ""),
+            item.get("_row_index") or 0,
+        )
+
+    staged.sort(key=_sort_key)
+
+    assigned_events = [e for e in staged if e.get("_event_type") == "ASSIGNED"]
+    completed_events = [e for e in staged if e.get("_event_type") == "COMPLETED"]
+    follow_up_events = [e for e in staged if e.get("_follow_up")]
+
+    first_assigned_ts = min(
+        (e.get("_event_ts") for e in assigned_events if e.get("_event_ts") is not None),
+        default=None,
+    )
+    last_completed_ts = max(
+        (e.get("_event_ts") for e in completed_events if e.get("_event_ts") is not None),
+        default=None,
+    )
+    elapsed_seconds = _seconds_between(first_assigned_ts, last_completed_ts)
+    elapsed_minutes = ""
+    if elapsed_seconds is not None and elapsed_seconds >= 0:
+        elapsed_minutes = f"{elapsed_seconds / 60.0:.2f}"
+
+    assigned_count = len(assigned_events)
+    completed_count = len(completed_events)
+    follow_up_count = len(follow_up_events)
+    total_events = len(staged)
+
+    if assigned_count > completed_count:
+        lifecycle_status = "OPEN"
+    elif assigned_count > 0 and completed_count >= assigned_count:
+        lifecycle_status = "CLOSED"
+    elif completed_count > 0 and assigned_count == 0:
+        lifecycle_status = "COMPLETED_ONLY"
+    else:
+        lifecycle_status = "UNKNOWN"
+
+    target_ref = _normalize_sami_lookup(sami_ref)
+    audit_fields = [
+        "Audit SAMI Ref",
+        "Manager Assigned TS",
+        "Manager Completed TS",
+        "Manager Assigned -> Completed (mins)",
+        "Audit First Assigned TS",
+        "Audit Last Completed TS",
+        "Audit Elapsed Minutes",
+        "Audit Lifecycle Status",
+        "Audit Assigned Count",
+        "Audit Completed Count",
+        "Audit Follow Up Count",
+        "Audit Total Events",
+        "Audit Event Seq",
+        "Audit Event Type",
+        "Audit Action",
+        "Audit Follow Up",
+        "Audit Staff Email",
+        "Audit Row SAMI Source",
+        "Audit Resolved Event TS",
+        "Audit Matched By",
+    ]
+
+    csv_rows: list[dict] = []
+    for seq, item in enumerate(staged, start=1):
+        raw_row = item.get("_raw_row") or {}
+        out = {
+            "Audit SAMI Ref": target_ref,
+            "Manager Assigned TS": _format_audit_ts(first_assigned_ts),
+            "Manager Completed TS": _format_audit_ts(last_completed_ts),
+            "Manager Assigned -> Completed (mins)": elapsed_minutes,
+            "Audit First Assigned TS": _format_audit_ts(first_assigned_ts),
+            "Audit Last Completed TS": _format_audit_ts(last_completed_ts),
+            "Audit Elapsed Minutes": elapsed_minutes,
+            "Audit Lifecycle Status": lifecycle_status,
+            "Audit Assigned Count": assigned_count,
+            "Audit Completed Count": completed_count,
+            "Audit Follow Up Count": follow_up_count,
+            "Audit Total Events": total_events,
+            "Audit Event Seq": seq,
+            "Audit Event Type": item.get("_event_type") or "",
+            "Audit Action": (raw_row.get("Action") or "").strip(),
+            "Audit Follow Up": "yes" if item.get("_follow_up") else "no",
+            "Audit Staff Email": item.get("_staff_email") or "",
+            "Audit Row SAMI Source": _row_sami_source(raw_row),
+            "Audit Resolved Event TS": _format_audit_ts(item.get("_event_ts")),
+            "Audit Matched By": "sami_id_or_subject",
+        }
+        for key in raw_fieldnames:
+            out[key] = raw_row.get(key, "")
+        csv_rows.append(out)
+
+    return csv_rows, audit_fields + raw_fieldnames
 
 
 def _normalize_email(raw) -> tuple[str | None, str | None]:
@@ -628,6 +912,31 @@ async def active_export(date_start: str | None = None, date_end: str | None = No
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+@app.get("/api/sami-export")
+async def sami_export(sami_ref: str):
+    """Download an audit CSV for all rows that match a SAMI reference code."""
+    target = _normalize_sami_lookup(sami_ref)
+    if not target:
+        raise HTTPException(status_code=400, detail="sami_ref parameter is required")
+
+    rows, _ = load_csv(_resolve_stats_csv_path())
+    csv_rows, fieldnames = _build_sami_audit_csv(rows or [], target)
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(csv_rows)
+
+    safe_ref = re.sub(r"[^a-zA-Z0-9_\-]+", "_", target)
+    filename = f"{safe_ref}_audit.csv"
+
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 
 # ── Reconciliation endpoints ──
 

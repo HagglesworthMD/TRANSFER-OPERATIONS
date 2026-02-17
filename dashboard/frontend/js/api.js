@@ -168,6 +168,13 @@ const DashboardAPI = {
         return `${this.base}/api/active-export${this._toQuery(params)}`;
     },
 
+    getSamiCsvUrl(samiRef) {
+        const qs = new URLSearchParams();
+        if (samiRef) qs.set('sami_ref', samiRef);
+        const s = qs.toString();
+        return `${this.base}/api/sami-export${s ? `?${s}` : ''}`;
+    },
+
     async getStaffActive(email, params) {
         const qs = this._toQuery(params);
         const res = await fetch(`${this.base}/api/staff/${encodeURIComponent(email)}/active${qs}`);
