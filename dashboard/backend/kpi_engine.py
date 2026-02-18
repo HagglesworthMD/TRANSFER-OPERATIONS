@@ -492,9 +492,18 @@ def _resolve_sami_group_key(e: dict) -> str:
 def export_active_events(rows: list[dict], date_start: str, date_end: str,
                          staff_name: str | None = None,
                          reconciled_set: set[str] | None = None) -> list[dict]:
-    """Return likely-open ASSIGNED tickets with SAMI references for CSV/export."""
+    """Return likely-open ASSIGNED tickets with SAMI references for CSV/export.
+
+    Active scope is "open as of end date": include assignments on or before
+    date_end that are not completed by date_end. date_start is accepted for
+    API compatibility but does not constrain active backlog.
+    """
     events = _normalise_rows(rows)
-    filtered = [e for e in events if date_start <= (e.get("date") or "") <= date_end]
+    _ = date_start
+    candidates = [
+        e for e in events
+        if e.get("event_type") == "ASSIGNED" and (not (e.get("date") or "") or (e.get("date") or "") <= date_end)
+    ]
 
     staff_target = (staff_name or "").strip().lower()
 
@@ -509,10 +518,7 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
             completed_sami_keys.add(sami_key)
 
     latest_by_identity: dict[str, dict] = {}
-    for e in filtered:
-        if e.get("event_type") != "ASSIGNED":
-            continue
-
+    for e in candidates:
         staff_email = (e.get("assigned_to") or "").strip().lower()
         if not _is_staff(staff_email):
             continue
@@ -596,9 +602,96 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     events = _normalise_rows(rows)
     filtered = [e for e in events if ds <= (e["date"] or "") <= de]
 
-    # ── Summary cards ──
-    processed = len([e for e in filtered if e["event_type"] == "ASSIGNED"])
-    completions = len([e for e in filtered if e["event_type"] == "COMPLETED"])
+    # ── Summary cards (canonical SAMI lifecycle) ──
+    def _resolve_received_ts(e: dict, kind: str) -> datetime | None:
+        if kind == "assigned":
+            ts = e.get("assigned_ts") or e.get("event_ts")
+        else:
+            ts = e.get("completed_ts") or e.get("event_ts")
+        if ts:
+            return ts
+
+        date_raw = e.get("date") or e.get("Date")
+        time_raw = e.get("time") or e.get("Time")
+        date_str = date_raw.strip() if isinstance(date_raw, str) else ""
+        time_str = time_raw.strip() if isinstance(time_raw, str) else ""
+        if not date_str or not time_str:
+            return None
+        return _parse_ts(f"{date_str}T{time_str}") or _parse_ts(f"{date_str} {time_str}")
+
+    def _is_reconciliation_only(e: dict) -> bool:
+        event_type = (e.get("event_type") or "").strip().upper()
+        action = (e.get("action") or e.get("Action") or "").strip().upper()
+        return event_type.startswith("RECON") or action.startswith("RECON")
+
+    def _is_canonical_kpi_event(e: dict) -> bool:
+        event_type = (e.get("event_type") or "").strip().upper()
+        if event_type == "CONFIG_CHANGED":
+            return False
+        if event_type not in ("ASSIGNED", "COMPLETED"):
+            return False
+        if _is_reconciliation_only(e):
+            return False
+        return bool(_resolve_sami_group_key(e))
+
+    jobs: dict[str, dict[str, Any]] = {}
+    for e in events:
+        if not _is_canonical_kpi_event(e):
+            continue
+        key = _resolve_sami_group_key(e)
+        event_type = (e.get("event_type") or "").strip().upper()
+        job = jobs.setdefault(
+            key,
+            {
+                "has_assigned": False,
+                "has_completed": False,
+                "assigned_ts": None,
+                "completed_ts": None,
+                "assigned_event": None,
+            },
+        )
+
+        if event_type == "ASSIGNED":
+            job["has_assigned"] = True
+            assigned_ts = _resolve_received_ts(e, "assigned")
+            if assigned_ts and (job["assigned_ts"] is None or assigned_ts < job["assigned_ts"]):
+                job["assigned_ts"] = assigned_ts
+                job["assigned_event"] = e
+        elif event_type == "COMPLETED":
+            job["has_completed"] = True
+            completed_ts = _resolve_received_ts(e, "completed")
+            if completed_ts and (job["completed_ts"] is None or completed_ts < job["completed_ts"]):
+                job["completed_ts"] = completed_ts
+
+    assigned_keys_in_range: set[str] = set()
+    completed_keys_in_range: set[str] = set()
+    for e in filtered:
+        if not _is_canonical_kpi_event(e):
+            continue
+        key = _resolve_sami_group_key(e)
+        event_type = (e.get("event_type") or "").strip().upper()
+        if event_type == "ASSIGNED":
+            assigned_keys_in_range.add(key)
+        elif event_type == "COMPLETED":
+            completed_keys_in_range.add(key)
+
+    processed_keys: set[str] = set()
+    completed_matched_keys: set[str] = set()
+    for key, job in jobs.items():
+        assigned_event = job.get("assigned_event")
+        if not assigned_event:
+            continue
+        assigned_email = (assigned_event.get("assigned_to") or "").strip().lower()
+        if not _is_staff(assigned_email):
+            continue
+        if key in assigned_keys_in_range:
+            processed_keys.add(key)
+        if key in completed_keys_in_range and job.get("has_completed"):
+            completed_matched_keys.add(key)
+
+    processed = len(processed_keys)
+    completions = len(completed_matched_keys)
+    completions_unmatched = len(completed_keys_in_range - completed_matched_keys)
 
     # Keep summary active_count in parity with /api/active modal output.
     active_rows = export_active_events(
@@ -724,6 +817,8 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     summary = {
         "processed_today": processed,
         "completions_today": completions,
+        "completions_matched": completions,
+        "completions_unmatched": completions_unmatched,
         "active_count": active_count,
         "active_staff": active_staff,
         "avg_time_sec": round(avg_time_sec, 1),
@@ -733,6 +828,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
         "next_staff": next_staff,
         "hib_burst": hib_burst,
         "durations_suppressed": suppressed_count,
+        "kpi_mode": "sami_lifecycle_v1",
     }
 
     # ── Per-staff KPIs (filtered range for counts, all events for active) ──
@@ -806,11 +902,13 @@ def _empty_dashboard(now: datetime, roster_state: dict | None, hib_state: dict |
     return {
         "summary": {
             "processed_today": 0, "completions_today": 0, "active_count": 0,
+            "completions_matched": 0, "completions_unmatched": 0,
             "active_staff": 0, "avg_time_sec": 0, "avg_time_human": "N/A",
             "uptime": None,
             "total_processed": roster_state.get("total_processed") if roster_state else None,
             "next_staff": None,
             "hib_burst": hib_burst,
+            "kpi_mode": "sami_lifecycle_v1",
         },
         "staff_kpis": [],
         "hourly": {},

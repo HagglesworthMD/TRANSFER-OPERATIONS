@@ -235,8 +235,73 @@ class DashboardSamiGroupingTests(unittest.TestCase):
             reconciled_set=set(),
         )
 
-        self.assertEqual(payload["summary"]["active_count"], 0)
-        self.assertEqual(sum(r["active"] for r in payload["staff_kpis"]), 0)
+        self.assertEqual(payload["summary"]["active_count"], 1)
+        self.assertEqual(sum(r["active"] for r in payload["staff_kpis"]), 1)
+
+    def test_summary_flags_unmatched_completion_jobs(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="14:00:00",
+                subject="[COMPLETED] orphan completion",
+                event_type="COMPLETED",
+                assigned_to="completed",
+                sender="alice.smith@example.com",
+                msg_key="u1",
+                sami_id="SAMI-UNMATCH1",
+            ),
+        ]
+
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end=self.DAY,
+            reconciled_set=set(),
+        )
+
+        self.assertEqual(payload["summary"]["completions_today"], 0)
+        self.assertEqual(payload["summary"]["completions_matched"], 0)
+        self.assertEqual(payload["summary"]["completions_unmatched"], 1)
+
+    def test_processed_counts_unique_sami_assignments(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Duplicate assignment A",
+                event_type="ASSIGNED",
+                assigned_to="alice.smith@example.com",
+                msg_key="p1",
+                sami_id="SAMI-PROC01",
+            ),
+            self._row(
+                date=self.DAY,
+                time="09:05:00",
+                subject="Duplicate assignment B",
+                event_type="ASSIGNED",
+                assigned_to="alice.smith@example.com",
+                msg_key="p2",
+                sami_id="SAMI-PROC01",
+            ),
+        ]
+
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end=self.DAY,
+            reconciled_set=set(),
+        )
+
+        self.assertEqual(payload["summary"]["processed_today"], 1)
+        self.assertEqual(payload["summary"]["completions_today"], 0)
 
 
 if __name__ == "__main__":

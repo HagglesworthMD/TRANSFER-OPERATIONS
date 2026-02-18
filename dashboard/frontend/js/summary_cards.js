@@ -7,6 +7,7 @@ const SummaryCards = {
         if (!summary) return;
         this._set('card-processed', summary.processed_today);
         this._set('card-completions', summary.completions_today);
+        this._updateCompletionsDetail(summary);
         this._set('card-active', summary.active_count);
         this._set('card-active-staff', summary.active_staff);
         this._set('card-avg-time', summary.avg_time_human || 'N/A');
@@ -17,6 +18,22 @@ const SummaryCards = {
             summary.next_staff || '—'
         );
         this._updateHibCard(summary.hib_burst);
+    },
+
+    _updateCompletionsDetail(summary) {
+        const detailEl = document.getElementById('card-completions-detail');
+        if (!detailEl) return;
+
+        const unmatched = Number(summary.completions_unmatched || 0);
+        if (unmatched > 0) {
+            detailEl.textContent = `+${unmatched} unmatched`;
+            detailEl.classList.remove('ok');
+            detailEl.classList.add('warn');
+        } else {
+            detailEl.textContent = 'All matched';
+            detailEl.classList.remove('warn');
+            detailEl.classList.add('ok');
+        }
     },
 
     _updateHibCard(hibBurst) {

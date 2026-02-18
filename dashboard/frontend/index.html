@@ -71,15 +71,16 @@
         <!-- Summary Cards Row -->
         <section class="summary-row" id="summary-cards">
             <div class="card summary-card" data-key="processed_today">
-                <div class="card-label">Processed <span class="tooltip-icon" title="Total emails processed by SAMI — includes imaging transfer requests, system notifications, quarantined items, and other non-imaging emails. Not all processed items result in a staff completion.">?</span></div>
+                <div class="card-label">Processed <span class="tooltip-icon" title="Unique SAMI jobs assigned to staff during the selected date range.">?</span></div>
                 <div class="card-value" id="card-processed">—</div>
             </div>
             <div class="card summary-card" data-key="completions_today">
-                <div class="card-label">Completions</div>
+                <div class="card-label">Completions <span class="tooltip-icon" title="Unique SAMI jobs completed in range and matched to an assignment lifecycle. This can be higher than Processed when staff clear carry-over jobs assigned before the selected range.">?</span></div>
                 <div class="card-value" id="card-completions">—</div>
+                <div class="card-sublabel" id="card-completions-detail"></div>
             </div>
             <div class="card summary-card card-clickable" data-key="active_count" id="active-card" title="Click to view active tickets">
-                <div class="card-label">Active</div>
+                <div class="card-label">Active <span class="tooltip-icon" title="Open SAMI jobs as of the selected end date (includes carry-over backlog).">?</span></div>
                 <div class="card-value" id="card-active">—</div>
             </div>
             <div class="card summary-card" data-key="active_staff">
@@ -115,8 +116,8 @@
                             <tr>
                                 <th data-sort="name" class="sortable">Staff</th>
                                 <th data-sort="assigned" class="sortable" title="Tickets assigned during the selected date range">Assigned <span class="tooltip-icon">?</span></th>
-                                <th data-sort="completed" class="sortable" title="Tickets completed during the selected date range — may include tickets assigned earlier">Completed <span class="tooltip-icon">?</span></th>
-                                <th data-sort="active" class="sortable">Active</th>
+                                <th data-sort="completed" class="sortable" title="Tickets completed during the selected date range. This may exceed Assigned when staff complete carry-over jobs from earlier dates.">Completed <span class="tooltip-icon">?</span></th>
+                                <th data-sort="active" class="sortable" title="Open SAMI jobs as of the selected end date (includes carry-over backlog), so this can be higher than Assigned.">Active <span class="tooltip-icon">?</span></th>
                                 <th data-sort="median_min" class="sortable" title="Median completion time across all data">Median Time <span class="tooltip-icon">?</span></th>
                                 <th data-sort="p90_min" class="sortable" title="90th percentile completion time — 90% of tasks complete faster than this">P90 Time <span class="tooltip-icon">?</span></th>
                             </tr>

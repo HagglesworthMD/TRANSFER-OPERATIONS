@@ -469,6 +469,14 @@ body {
     font-weight: 500;
 }
 
+.card-sublabel.warn {
+    color: var(--accent-amber);
+}
+
+.card-sublabel.ok {
+    color: var(--text-muted);
+}
+
 /* HIB Burst Status Colors */
 .hib-normal {
     color: var(--accent-green);
