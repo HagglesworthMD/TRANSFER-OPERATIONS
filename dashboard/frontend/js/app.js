@@ -236,5 +236,54 @@ const App = {
     },
 };
 
-// Boot
-document.addEventListener('DOMContentLoaded', () => App.init());
+// Boot — check session before initialising dashboard
+document.addEventListener('DOMContentLoaded', async () => {
+    const loginOverlay = document.getElementById('login-overlay');
+    const loadingOverlay = document.getElementById('loading-overlay');
+    const loginForm = document.getElementById('login-form');
+    const loginError = document.getElementById('login-error');
+    const logoutBtn = document.getElementById('logout-btn');
+
+    async function tryBoot() {
+        try {
+            await DashboardAPI.checkSession();
+            // Authenticated — hide login, show loading, init dashboard
+            loginOverlay.classList.add('hidden');
+            loadingOverlay.classList.remove('hidden');
+            await App.init();
+        } catch {
+            // Not authenticated — show login form
+            loadingOverlay.classList.add('hidden');
+            loginOverlay.classList.remove('hidden');
+            document.getElementById('login-username').focus();
+        }
+    }
+
+    loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const username = document.getElementById('login-username').value.trim();
+        const password = document.getElementById('login-password').value.trim();
+        loginError.classList.add('hidden');
+        try {
+            await DashboardAPI.login(username, password);
+            loginOverlay.classList.add('hidden');
+            loadingOverlay.classList.remove('hidden');
+            await App.init();
+        } catch (err) {
+            loginError.textContent = err.message || 'Invalid credentials';
+            loginError.classList.remove('hidden');
+        }
+    });
+
+    logoutBtn.addEventListener('click', async () => {
+        await DashboardAPI.logout();
+        // Stop refresh loop
+        if (App._timer) {
+            clearInterval(App._timer);
+            App._timer = null;
+        }
+        location.reload();
+    });
+
+    await tryBoot();
+});

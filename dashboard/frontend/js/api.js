@@ -221,4 +221,28 @@ const DashboardAPI = {
         if (!res.ok) throw new Error(data.detail || 'Failed to remove reconciliation');
         return data;
     },
+
+    async checkSession() {
+        const res = await fetch(`${this.base}/api/me`);
+        if (!res.ok) throw new Error('Not authenticated');
+        return res.json();
+    },
+
+    async login(username, password) {
+        const res = await fetch(`${this.base}/api/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Login failed');
+        return data;
+    },
+
+    async logout() {
+        const res = await fetch(`${this.base}/api/logout`, {
+            method: 'POST',
+        });
+        return res.json();
+    },
 };

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -757,6 +758,8 @@ def _save_domain_policy_payload(payload: dict) -> tuple[bool, str | None]:
 
     return True, None
 
+_sessions: set[str] = set()
+
 app = FastAPI(title="Transfer-Bot Dashboard API")
 
 app.add_middleware(
@@ -764,12 +767,20 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
-# Disable caching for all responses
+
 @app.middleware("http")
-async def disable_cache(request: Request, call_next):
-    response = await call_next(request)
+async def auth_guard(request: Request, call_next):
+    path = request.url.path
+    if path == "/api/login" or not path.startswith("/api/"):
+        response = await call_next(request)
+    else:
+        token = request.cookies.get("session")
+        if not token or token not in _sessions:
+            return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+        response = await call_next(request)
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
@@ -784,6 +795,40 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"error": str(exc), "detail": "Internal server error"},
     )
+
+
+# ── Auth endpoints ──
+
+@app.post("/api/login")
+async def login(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    username = (body.get("username") or "").strip()
+    password = (body.get("password") or "").strip()
+    if username != "admin" or password != "sami3821":
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = secrets.token_hex(16)
+    _sessions.add(token)
+    response = JSONResponse(content={"ok": True})
+    response.set_cookie(key="session", value=token, httponly=True, path="/", samesite="lax")
+    return response
+
+
+@app.post("/api/logout")
+async def logout(request: Request):
+    token = request.cookies.get("session")
+    if token:
+        _sessions.discard(token)
+    response = JSONResponse(content={"ok": True})
+    response.delete_cookie(key="session", path="/")
+    return response
+
+
+@app.get("/api/me")
+async def me():
+    return {"ok": True}
 
 
 # ── Endpoints ──
