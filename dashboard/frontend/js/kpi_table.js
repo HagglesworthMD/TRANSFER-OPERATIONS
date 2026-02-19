@@ -4,6 +4,7 @@ const KPITable = {
     _data: [],
     _sortKey: 'assigned',
     _sortDir: 'desc',
+    _assignedMode: 'all',
 
     init() {
         const headers = document.querySelectorAll('#kpi-table thead th.sortable');
@@ -20,6 +21,20 @@ const KPITable = {
                 this._render();
             });
         });
+
+        // Assigned toggle: switch between all-time and in-range
+        const toggleBtn = document.getElementById('assigned-toggle');
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._assignedMode = this._assignedMode === 'all' ? 'range' : 'all';
+                toggleBtn.textContent = this._assignedMode === 'all' ? 'All' : 'Range';
+                this._render();
+                document.dispatchEvent(new CustomEvent('assigned-mode-change', {
+                    detail: { mode: this._assignedMode }
+                }));
+            });
+        }
 
         // Delegated click handler for staff name CSV export
         const tbody = document.getElementById('kpi-tbody');
@@ -58,9 +73,11 @@ const KPITable = {
         const tbody = document.getElementById('kpi-tbody');
         if (!tbody) return;
 
+        const effectiveSortKey = (this._sortKey === 'assigned' && this._assignedMode === 'range')
+            ? 'assigned_in_range' : this._sortKey;
         const sorted = [...this._data].sort((a, b) => {
-            let av = a[this._sortKey];
-            let bv = b[this._sortKey];
+            let av = a[effectiveSortKey];
+            let bv = b[effectiveSortKey];
             if (av == null) av = -Infinity;
             if (bv == null) bv = -Infinity;
             if (typeof av === 'string') av = av.toLowerCase();
@@ -85,13 +102,32 @@ const KPITable = {
 
             return `<tr class="${rowClass}">
                 <td class="cell-name cell-name-link" data-name="${this._esc(s.name)}">${this._esc(s.name)}</td>
-                <td>${s.assigned}</td>
+                <td>${this._assignedMode === 'all' ? s.assigned : s.assigned_in_range}</td>
                 <td>${s.completed}</td>
                 <td>${s.active}</td>
                 <td>${s.median_human || '—'}${lcIcon}</td>
                 <td class="${p90Class}">${s.p90_human || '—'}${lcIcon}</td>
             </tr>`;
         }).join('');
+
+        // Totals footer row
+        const tfoot = document.getElementById('kpi-tfoot');
+        if (tfoot) {
+            let totalAssigned = 0, totalCompleted = 0, totalActive = 0;
+            for (const s of this._data) {
+                totalAssigned += this._assignedMode === 'all' ? s.assigned : s.assigned_in_range;
+                totalCompleted += s.completed;
+                totalActive += s.active;
+            }
+            tfoot.innerHTML = `<tr class="kpi-totals-row">
+                <td>Total</td>
+                <td>${totalAssigned}</td>
+                <td>${totalCompleted}</td>
+                <td>${totalActive}</td>
+                <td></td>
+                <td></td>
+            </tr>`;
+        }
     },
 
     _esc(str) {

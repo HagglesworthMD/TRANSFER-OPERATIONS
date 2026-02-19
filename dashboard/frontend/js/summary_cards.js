@@ -2,10 +2,26 @@
 
 const SummaryCards = {
     _prev: {},
+    _lastSummary: null,
+
+    initToggleListener() {
+        document.addEventListener('assigned-mode-change', (e) => {
+            if (!this._lastSummary) return;
+            const mode = e.detail.mode;
+            const val = mode === 'all'
+                ? this._lastSummary.processed_today
+                : this._lastSummary.processed_in_range;
+            this._set('card-processed', val);
+        });
+    },
 
     update(summary) {
         if (!summary) return;
-        this._set('card-processed', summary.processed_today);
+        this._lastSummary = summary;
+        const assignedMode = (typeof KPITable !== 'undefined' && KPITable._assignedMode === 'range')
+            ? 'range' : 'all';
+        this._set('card-processed', assignedMode === 'all'
+            ? summary.processed_today : summary.processed_in_range);
         this._set('card-completions', summary.completions_today);
         this._updateCompletionsDetail(summary);
         this._set('card-active', summary.active_count);

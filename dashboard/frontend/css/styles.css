@@ -487,6 +487,23 @@ body {
     border-color: var(--accent-blue);
     color: var(--accent-blue);
 }
+.btn-toggle-sm {
+    padding: 1px 7px;
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.65rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    vertical-align: middle;
+    margin-left: 2px;
+}
+.btn-toggle-sm:hover {
+    border-color: var(--accent-blue);
+    color: var(--accent-blue);
+}
 
 .range-label {
     font-size: 0.86rem;
@@ -727,6 +744,15 @@ body {
 .kpi-table td.p90-warning {
     color: var(--accent-red);
     font-weight: 700;
+}
+.kpi-totals-row {
+    border-top: 2px solid var(--border-soft);
+    font-weight: 700;
+    color: var(--text-primary);
+    background: var(--bg-soft);
+}
+.kpi-totals-row td {
+    padding: 8px 12px;
 }
 
 .low-confidence-icon {

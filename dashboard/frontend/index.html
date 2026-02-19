@@ -86,7 +86,7 @@
         <!-- Summary Cards Row -->
         <section class="summary-row" id="summary-cards">
             <div class="card summary-card" data-key="processed_today">
-                <div class="card-label">Processed <span class="tooltip-icon" title="Unique SAMI jobs assigned to staff during the selected date range.">?</span></div>
+                <div class="card-label">Processed <span class="tooltip-icon" title="Total unique SAMI jobs assigned to staff. Use the toggle on the KPI table to switch between All Time and In Range.">?</span></div>
                 <div class="card-value" id="card-processed">—</div>
             </div>
             <div class="card summary-card" data-key="completions_today">
@@ -130,14 +130,15 @@
                         <thead>
                             <tr>
                                 <th data-sort="name" class="sortable">Staff</th>
-                                <th data-sort="assigned" class="sortable" title="Tickets assigned during the selected date range">Assigned <span class="tooltip-icon">?</span></th>
-                                <th data-sort="completed" class="sortable" title="Tickets completed during the selected date range. This may exceed Assigned when staff complete carry-over jobs from earlier dates.">Completed <span class="tooltip-icon">?</span></th>
+                                <th data-sort="assigned" class="sortable" title="Toggle between all-time and in-range assigned counts">Assigned <span class="tooltip-icon">?</span> <button id="assigned-toggle" class="btn-toggle-sm" title="Toggle All Time / In Range">All</button></th>
+                                <th data-sort="completed" class="sortable" title="Unique SAMI jobs completed during the selected date range.">Completed <span class="tooltip-icon">?</span></th>
                                 <th data-sort="active" class="sortable" title="Open SAMI jobs as of the selected end date (includes carry-over backlog), so this can be higher than Assigned.">Active <span class="tooltip-icon">?</span></th>
                                 <th data-sort="median_min" class="sortable" title="Median completion time across all data">Median Time <span class="tooltip-icon">?</span></th>
                                 <th data-sort="p90_min" class="sortable" title="90th percentile completion time — 90% of tasks complete faster than this">P90 Time <span class="tooltip-icon">?</span></th>
                             </tr>
                         </thead>
                         <tbody id="kpi-tbody"></tbody>
+                        <tfoot id="kpi-tfoot"></tfoot>
                     </table>
                 </div>
             </div>

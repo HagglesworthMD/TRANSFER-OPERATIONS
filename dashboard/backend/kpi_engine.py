@@ -676,6 +676,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
             completed_keys_in_range.add(key)
 
     processed_keys: set[str] = set()
+    processed_in_range_keys: set[str] = set()
     completed_matched_keys: set[str] = set()
     for key, job in jobs.items():
         assigned_event = job.get("assigned_event")
@@ -684,8 +685,10 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
         assigned_email = (assigned_event.get("assigned_to") or "").strip().lower()
         if not _is_staff(assigned_email):
             continue
-        if key in assigned_keys_in_range:
+        if job.get("has_assigned"):
             processed_keys.add(key)
+        if key in assigned_keys_in_range:
+            processed_in_range_keys.add(key)
         if key in completed_keys_in_range and job.get("has_completed"):
             completed_matched_keys.add(key)
 
@@ -816,6 +819,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
 
     summary = {
         "processed_today": processed,
+        "processed_in_range": len(processed_in_range_keys),
         "completions_today": completions,
         "completions_matched": completions,
         "completions_unmatched": completions_unmatched,
@@ -971,6 +975,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
 
     # Group by staff email (canonical per-SAMI job metrics)
     staff_assigned: dict[str, int] = defaultdict(int)
+    staff_assigned_in_range: dict[str, int] = defaultdict(int)
     staff_completed: dict[str, int] = defaultdict(int)
     staff_active: dict[str, int] = defaultdict(int)
     staff_durations: dict[str, list[float]] = defaultdict(list)
@@ -1064,8 +1069,10 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             continue
         canonical_staff_emails.add(assigned_email)
 
-        if key in assigned_keys_in_range:
+        if job.get("has_assigned"):
             staff_assigned[assigned_email] += 1
+        if key in assigned_keys_in_range:
+            staff_assigned_in_range[assigned_email] += 1
         if key in completed_keys_in_range and job.get("has_completed"):
             staff_completed[assigned_email] += 1
         if job.get("has_assigned") and not job.get("has_completed"):
@@ -1110,6 +1117,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             "email": email,
             "name": _staff_display_name(email),
             "assigned": assigned,
+            "assigned_in_range": staff_assigned_in_range.get(email, 0),
             "completed": completed,
             "active": active,
             "median_min": median_min,

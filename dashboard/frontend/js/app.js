@@ -10,6 +10,7 @@ const App = {
     async init() {
         this._initThemeControls();
         KPITable.init();
+        SummaryCards.initToggleListener();
         StaffPanel.init();
         ActivityFeed.init();
         HourlyDetail.init();
