@@ -32,7 +32,11 @@ processed_ledger.json.tmp.*
 # Ignore local-only exports/reports
 INBOX SCRAPE/
 archive/
-tools/data/
+tools/
+domain_inventory_report.*
+*_route_audit_*.md
+tmp_*.json
+nul
 
 # Ignore OS files
 .DS_Store
@@ -45,10 +49,7 @@ desktop.ini
 *.swp
 *.swo
 
-# Ignore embedded repo folder
-Transfer-Bot-3/
-
-# Ignore Outlook snapshot artifacts (dev-only)
+# Ignore snapshot artifacts (dev-only)
 data/snapshots/
 data/snapshot_salt.txt
 *.snapshot.tmp
