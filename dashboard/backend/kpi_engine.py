@@ -306,6 +306,7 @@ def _normalise_rows(rows: list[dict]) -> list[dict]:
             "COMPLETION_UNMATCHED",
             "COMPLETION_LINKED_TO_ASSIGNMENT",
             "COMPLETION_NOT_LINKED_TO_ASSIGNMENT",
+            "COMPLETION_SWEEP",
         ):
             event_type_raw = "COMPLETED"
 
@@ -502,7 +503,7 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
     _ = date_start
     candidates = [
         e for e in events
-        if e.get("event_type") == "ASSIGNED" and (not (e.get("date") or "") or (e.get("date") or "") <= date_end)
+        if e.get("event_type") in ("ASSIGNED", "REASSIGN_MANUAL") and (not (e.get("date") or "") or (e.get("date") or "") <= date_end)
     ]
 
     staff_target = (staff_name or "").strip().lower()
@@ -709,76 +710,41 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
 
     active_staff = len(staff_list) if staff_list else 0
 
-    # Avg completion time — infer durations via per-staff nearest-preceding matching
-    # (mirrors _compute_staff_kpis logic: match each COMPLETED to the
-    #  earliest unmatched ASSIGNED for the same staff member)
-    _avg_staff_queues: dict[str, list[datetime]] = defaultdict(list)
-    for e in events:
-        if e["event_type"] != "ASSIGNED":
-            continue
-        email = (e.get("assigned_to") or "").strip().lower()
-        if not _is_staff(email):
-            continue
-        ts = e.get("assigned_ts") or e.get("event_ts")
-        if ts:
-            _avg_staff_queues[email].append(ts)
-    for q in _avg_staff_queues.values():
-        q.sort()
-
-    # Pre-consume queue with completions before the filtered date range
-    if ds and ds > "2000-01-01":
-        range_start_dt = _parse_ts(f"{ds}T00:00:00")
-        for e in events:
-            if e["event_type"] != "COMPLETED":
-                continue
-            if (e.get("date") or "") >= ds:
-                continue
-            email = (e.get("assigned_to") or "").strip().lower()
-            if not _is_staff(email):
-                sender = (e.get("sender") or "").strip().lower()
-                email = sender if _is_staff(sender) else ""
-            if not email or not _avg_staff_queues.get(email):
-                continue
-            completed_ts = e.get("completed_ts") or e.get("event_ts")
-            if completed_ts:
-                _pop_nearest_preceding(_avg_staff_queues[email], completed_ts)
-
+    # Avg completion time — canonical SAMI lifecycle durations
+    # (identical algorithm to per-staff KPIs)
     durations = []
     suppressed_count = 0
-    for e in filtered:
-        if e["event_type"] != "COMPLETED":
+    for key in completed_matched_keys:
+        job = jobs.get(key)
+        if not job:
             continue
-
-        dur = None
-
-        # Try explicit duration_sec first
-        if e["duration_sec"] is not None and e["duration_sec"] > 0:
-            dur = e["duration_sec"]
-        else:
-            # Resolve staff email for this completion
-            email = (e.get("assigned_to") or "").strip().lower()
-            if not _is_staff(email):
-                sender = (e.get("sender") or "").strip().lower()
-                email = sender if _is_staff(sender) else ""
-
-            completed_ts = e.get("completed_ts") or e.get("event_ts")
-            if email and completed_ts and _avg_staff_queues.get(email):
-                # Match to nearest preceding unclaimed ASSIGNED timestamp
-                a_ts = _pop_nearest_preceding(_avg_staff_queues[email], completed_ts)
-                if a_ts is not None:
-                    delta = _business_seconds(a_ts, completed_ts)
-                    if 0 < delta:
-                        dur = delta
-
-        if dur is not None:
-            if dur > _DURATION_HARD_CAP_SEC:
-                continue  # garbage data — discard entirely
-            if dur > _DURATION_MISMATCH_SEC:
-                suppressed_count += 1
-                continue  # suspected mismatch — exclude from average
-            durations.append(dur)
+        assigned_ts = job.get("assigned_ts")
+        completed_ts = job.get("completed_ts")
+        if not assigned_ts or not completed_ts:
+            continue
+        dur = _business_seconds(assigned_ts, completed_ts)
+        if dur <= 0:
+            continue
+        if dur > _DURATION_HARD_CAP_SEC:
+            continue
+        if dur > _DURATION_MISMATCH_SEC:
+            suppressed_count += 1
+            continue
+        durations.append(dur)
 
     avg_time_sec = sum(durations) / len(durations) if durations else 0
+
+    # Canonical SAMI durations lookup — shared with activity feed
+    _canonical_sami_durations: dict[str, float] = {}
+    for key in completed_matched_keys:
+        job = jobs.get(key)
+        if not job:
+            continue
+        a_ts, c_ts = job.get("assigned_ts"), job.get("completed_ts")
+        if a_ts and c_ts:
+            d = _business_seconds(a_ts, c_ts)
+            if 0 < d <= _DURATION_HARD_CAP_SEC and d <= _DURATION_MISMATCH_SEC:
+                _canonical_sami_durations[key] = d
 
     # Uptime: find earliest HEARTBEAT in raw rows for today
     first_hb = None
@@ -882,7 +848,8 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
 
     # ── Recent activity feed (last 50 in range) ──
     activity_feed = _build_activity_feed(filtered, events, limit=50,
-                                         staff_filter=staff_filter)
+                                         staff_filter=staff_filter,
+                                         canonical_durations=_canonical_sami_durations)
 
     return {
         "summary": summary,
@@ -1233,7 +1200,8 @@ def _compute_distribution(events: list[dict], field: str,
 
 
 def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: int = 50,
-                         staff_filter: str | None = None) -> list[dict]:
+                         staff_filter: str | None = None, *,
+                         canonical_durations: dict[str, float] | None = None) -> list[dict]:
     """Recent activity — most recent first."""
     # Build lookup: msg_key → staff email from ASSIGNED events (all events, not just filtered)
     # so COMPLETED rows can show who originally handled the ticket.
@@ -1383,10 +1351,15 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
     for e in feed_events[:limit]:
         staff = _display_staff(e)
 
-        # Infer duration for COMPLETED events (pre-computed in chronological order)
+        # Infer duration for COMPLETED events — prefer canonical SAMI duration,
+        # fall back to queue-based inference for non-SAMI events
         dur_sec = e["duration_sec"]
         if e["event_type"] == "COMPLETED" and not dur_sec:
-            dur_sec = _precomputed_dur.get(_event_key(e))
+            sami_key = _resolve_sami_group_key(e)
+            if sami_key and canonical_durations and sami_key in canonical_durations:
+                dur_sec = canonical_durations[sami_key]
+            else:
+                dur_sec = _precomputed_dur.get(_event_key(e))
 
         result.append({
             "time": e["event_ts"].strftime("%H:%M:%S") if e["event_ts"] else "",

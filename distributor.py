@@ -60,6 +60,7 @@ FILES = {
 
 PROCESSED_LEDGER_PATH = "processed_ledger.json"
 POISON_COUNTS_PATH = "poison_counts.json"
+REASSIGN_QUEUE_PATH = "reassign_queue.json"
 LOCK_PATH = "bot.lock"
 SETTINGS_OVERRIDES_PATH = "settings_overrides.json"
 DOMAIN_POLICY_PATH = "domain_policy.json"
@@ -2082,6 +2083,127 @@ def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", do
     except Exception as e:
         log(f"Error writing stats v2: {e}", "ERROR")
 
+def process_reassign_queue():
+    """Process pending reassignment requests from dashboard queue.
+
+    Governance rules:
+    - processed_ledger.json is READ-ONLY (no mutation)
+    - get_next_staff() is NOT called (no rotation pointer mutation)
+    - No Outlook interaction — pure file I/O
+    - Appends REASSIGN_MANUAL event to CSV via append_stats()
+    """
+    queue = safe_load_json(REASSIGN_QUEUE_PATH, [], state_name="reassign_queue")
+    if not queue:
+        return
+
+    log(f"REASSIGN_QUEUE_LOAD entries={len(queue)}", "INFO")
+
+    staff_list = get_staff_list()  # already filters off_rotation/leave
+    if not staff_list:
+        log("REASSIGN_SKIP reason=no_staff_available", "WARN")
+        return
+
+    staff_set = set(s.lower() for s in staff_list)
+    ledger = load_processed_ledger()  # READ-ONLY — never saved back
+    remaining = []
+    processed_count = 0
+
+    for entry in queue:
+        try:
+            sami_id = (entry.get("sami_id") or "").strip()
+            if not sami_id:
+                log("REASSIGN_SKIP_INVALID reason=missing_sami_id", "WARN")
+                remaining.append(entry)
+                continue
+
+            mode = entry.get("mode", "next_in_rotation")
+            target_email = (entry.get("target_staff_email") or "").strip().lower()
+            reason = entry.get("reason", "")
+            note = entry.get("note", "")
+            requested_by = entry.get("requested_by", "")
+            request_id = entry.get("request_id", "unknown")
+
+            # Resolve old_assignee from ledger (read-only lookup)
+            old_assignee = ""
+            if ledger:
+                for key, rec in ledger.items():
+                    if rec.get("sami_id") == sami_id and rec.get("assigned_to"):
+                        old_assignee = rec["assigned_to"]
+                        break
+
+            # Determine new assignee WITHOUT mutating rotation state
+            new_assignee = None
+            if mode == "target_staff":
+                if target_email in staff_set:
+                    new_assignee = target_email
+                else:
+                    log(
+                        f"REASSIGN_FAIL request_id={request_id} sami_id={sami_id} "
+                        f"reason=target_not_eligible target={target_email}",
+                        "WARN",
+                    )
+                    continue
+            else:  # next_in_rotation
+                # Deterministic pick: next staff in roster order after old_assignee.
+                # Does NOT call get_next_staff() and does NOT mutate rotation pointer.
+                if not staff_list:
+                    new_assignee = None
+                elif not old_assignee:
+                    # If no previous owner known, fallback to first in roster
+                    new_assignee = staff_list[0]
+                else:
+                    lower_list = [s.lower() for s in staff_list]
+                    old_lower = old_assignee.lower()
+                    if old_lower in lower_list:
+                        idx = lower_list.index(old_lower)
+                        next_idx = (idx + 1) % len(staff_list)
+                        new_assignee = staff_list[next_idx]
+                    else:
+                        # If old owner not found in roster, fallback safely
+                        new_assignee = staff_list[0]
+
+            if not new_assignee:
+                log(
+                    f"REASSIGN_FAIL request_id={request_id} sami_id={sami_id} "
+                    f"reason=no_eligible_staff",
+                    "WARN",
+                )
+                remaining.append(entry)
+                continue
+
+            # Append audit row to daily_stats CSV (NOT ledger mutation)
+            append_stats(
+                subject=f"REASSIGN: {sami_id} {old_assignee} -> {new_assignee} reason={reason} note={note}",
+                assigned_to=new_assignee,
+                sender=requested_by,
+                risk_level="normal",
+                domain_bucket="",
+                action="REASSIGN",
+                policy_source="dashboard",
+                event_type="REASSIGN_MANUAL",
+                msg_key="",
+                status_after="assigned",
+                assigned_ts=datetime.now().isoformat(),
+                completed_ts="",
+                duration_sec="",
+                sami_id=sami_id,
+            )
+
+            log(
+                f"REASSIGN_OK request_id={request_id} sami_id={sami_id} "
+                f"old={old_assignee} new={new_assignee} reason={reason}",
+                "INFO",
+            )
+            processed_count += 1
+
+        except Exception as e:
+            log(f"REASSIGN_ENTRY_ERROR entry={entry} error={e}", "ERROR")
+
+    # Atomic rewrite queue with only remaining (unprocessed) entries
+    atomic_write_json(REASSIGN_QUEUE_PATH, remaining, state_name="reassign_queue")
+    log(f"REASSIGN_QUEUE_DONE processed={processed_count} remaining={len(remaining)}", "INFO")
+
+
 def maybe_rotate_daily_stats_to_new_schema():
     """
     Safe CSV schema rotation: if existing daily_stats.csv has old 6-col header,
@@ -3349,7 +3471,21 @@ def process_inbox():
                             continue
                     except Exception as e:
                         log(f"COMPLETION_ERROR {e}", "ERROR")
-                        append_stats(subject, "completed", sender_email, "COMPLETION_ERROR", domain_bucket, "COMPLETION_ERROR", policy_source, event_type="COMPLETED")
+                        _err_sami = (
+                            extract_sami_id_from_subject(locals().get("subject_with_id", "") or "")
+                            or extract_sami_id_from_subject(subject)
+                        )
+                        append_stats(
+                            subject,
+                            "completed",
+                            sender_email,
+                            "COMPLETION_ERROR",
+                            domain_bucket,
+                            "COMPLETION_ERROR",
+                            policy_source,
+                            event_type="COMPLETED",
+                            sami_id=_err_sami,
+                        )
                         try:
                             msg.UnRead = False
                             _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
@@ -3367,11 +3503,26 @@ def process_inbox():
                     if is_internal_reply(sender_email, subject, staff_list):
                         msg_id = getattr(msg, "EntryID", "") or getattr(msg, "ConversationID", "") or ""
                         log(f"SMART_FILTER_SKIP msg_id={msg_id}", "INFO")
-                        append_stats(subject, "completed", sender_email, "normal", domain_bucket, "SMART_FILTER_COMPLETION", policy_source, event_type="COMPLETED")
+                        _sf_sami = (
+                            extract_sami_id_from_subject(locals().get("subject_with_id", "") or "")
+                            or extract_sami_id_from_subject(subject)
+                        )
+                        append_stats(
+                            subject,
+                            "completed",
+                            sender_email,
+                            "normal",
+                            domain_bucket,
+                            "SMART_FILTER_COMPLETION",
+                            policy_source,
+                            event_type="COMPLETED",
+                            sami_id=_sf_sami,
+                        )
                         processed_ledger[message_key] = {
                             "ts": datetime.now().isoformat(),
                             "assigned_to": "completed",
-                            "risk": "normal"
+                            "risk": "normal",
+                            "sami_id": _sf_sami
                         }
                         if identity.get("entry_id"):
                             processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
@@ -3574,7 +3725,21 @@ def process_inbox():
 
                     # Handle SAMI completion early
                     if is_completion:
-                        append_stats(subject, "completed", sender_email, "normal", domain_bucket, action_taken, policy_source, event_type="COMPLETED")
+                        _ic_sami = (
+                            extract_sami_id_from_subject(locals().get("subject_with_id", "") or "")
+                            or extract_sami_id_from_subject(subject)
+                        )
+                        append_stats(
+                            subject,
+                            "completed",
+                            sender_email,
+                            "normal",
+                            domain_bucket,
+                            action_taken,
+                            policy_source,
+                            event_type="COMPLETED",
+                            sami_id=_ic_sami,
+                        )
                         msg.UnRead = False
                         _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
                         if not _sb_ok:
@@ -3887,7 +4052,134 @@ def process_inbox():
                         else:
                             log(f"QUARANTINE_FAILED key={message_key} reason=folder_not_found", "ERROR")
                     continue  # Don't crash - continue to next email
-            
+
+            # ===== COMPLETION SWEEP: catch [COMPLETED] on already-read messages =====
+            # Staff replies may arrive already-read (Outlook auto-reads in shared
+            # mailboxes), so the UnRead=True filter above never sees them.
+            # Lookback: 48 hours, cap: 100 messages, per-item try/except.
+            try:
+                _lookback_dt = datetime.now() - timedelta(hours=48)
+                _sweep_lookback = _lookback_dt.strftime("%m/%d/%Y %H:%M %p")
+                _sweep_filter = (
+                    "[UnRead] = False"
+                    " AND [ReceivedTime] >= '" + _sweep_lookback + "'"
+                )
+                log("COMPLETION_SWEEP_START lookback_hours=48", "INFO")
+                _sweep_items = inbox.Items.Restrict(_sweep_filter)
+                try:
+                    _sweep_items.Sort("[ReceivedTime]", True)  # newest first
+                except Exception:
+                    pass
+                _sweep_count = 0
+                _sweep_scanned = 0
+                for _sw_msg in _sweep_items:
+                    if _sweep_scanned >= 100:
+                        break
+                    _sweep_scanned += 1
+                    try:
+                        try:
+                            _sw_subject = (_sw_msg.Subject or "").strip()
+                        except Exception:
+                            continue
+                        if not is_completion_subject(_sw_subject):
+                            continue
+                        _sw_sender = (resolve_sender_smtp(_sw_msg) or "unknown").lower().strip()
+                        if _sw_sender not in staff_list:
+                            continue
+                        _sw_key, _sw_identity = build_message_key(_sw_msg)
+                        if _sw_key in processed_ledger:
+                            continue
+                        # Resolve SAMI ID context
+                        _sw_subject_id = ensure_sami_id_in_subject(_sw_subject, _sw_msg)
+                        _sw_conv = get_conversation_id(_sw_msg)
+                        _sw_resolved, _sw_ctx_key, _sw_ctx_src = resolve_completion_sami_context(
+                            processed_ledger, _sw_conv, _sw_subject_id
+                        )
+                        if _sw_ctx_key:
+                            _sw_match = _sw_ctx_key
+                        elif _sw_conv:
+                            _sw_match = find_ledger_key_by_conversation_id(processed_ledger, _sw_conv)
+                        else:
+                            _sw_match = None
+
+                        _sw_sami = (
+                            _sw_resolved
+                            or (processed_ledger.get(_sw_match, {}).get("sami_id", "") if _sw_match else "")
+                            or extract_sami_id_from_subject(_sw_subject_id)
+                        )
+
+                        _sw_domain = extract_sender_domain(_sw_sender)
+                        _sw_bucket, _ = classify_sender(_sw_sender, _sw_domain, domain_policy)
+
+                        if _sw_match:
+                            _sw_entry = processed_ledger.get(_sw_match, {})
+                            _sw_entry["completed_at"] = datetime.now().isoformat()
+                            _sw_entry["completed_by"] = _sw_sender
+                            _sw_entry["completion_source"] = "completion_sweep"
+                            _sw_entry["sweep_key"] = _sw_key
+                            processed_ledger[_sw_match] = _sw_entry
+                            append_stats(
+                                _sw_subject,
+                                "completed",
+                                _sw_sender,
+                                "COMPLETION_MATCHED",
+                                _sw_bucket or "",
+                                "COMPLETION_SUBJECT_KEYWORD",
+                                "completion_sweep",
+                                event_type="COMPLETED",
+                                sami_id=_sw_sami,
+                            )
+                        else:
+                            processed_ledger[_sw_key] = {
+                                "ts": datetime.now().isoformat(),
+                                "assigned_to": "completed",
+                                "risk": "normal",
+                                "completion_source": "completion_sweep",
+                                "sami_id": _sw_sami,
+                                "sweep_key": _sw_key,
+                            }
+                            if _sw_identity.get("entry_id"):
+                                processed_ledger[_sw_key]["entry_id"] = _sw_identity["entry_id"]
+                            if _sw_identity.get("store_id"):
+                                processed_ledger[_sw_key]["store_id"] = _sw_identity["store_id"]
+                            if _sw_conv:
+                                processed_ledger[_sw_key]["conversation_id"] = _sw_conv
+                            append_stats(
+                                _sw_subject,
+                                "completed",
+                                _sw_sender,
+                                "normal",
+                                _sw_bucket or "",
+                                "COMPLETION_SWEEP",
+                                "completion_sweep",
+                                event_type="COMPLETED",
+                                msg_key=_sw_key,
+                                sami_id=_sw_sami,
+                            )
+
+                        try:
+                            _sb_ok, _sb_actual = check_msg_mailbox_store(_sw_msg, target_store)
+                            if _sb_ok:
+                                if completed_dest:
+                                    _sw_msg.Move(completed_dest)
+                                else:
+                                    _sw_msg.Move(processed)
+                        except Exception:
+                            pass
+                        _sweep_count += 1
+                        log(f"COMPLETION_SWEEP_HIT sender={_sw_sender} sami_id={_sw_sami}", "INFO")
+                    except Exception as _sw_err:
+                        log(f"COMPLETION_SWEEP_ERROR {_sw_err}", "WARN")
+                        continue
+                if _sweep_count > 0:
+                    save_processed_ledger(processed_ledger)
+                log(
+                    f"COMPLETION_SWEEP_DONE found={_sweep_count} scanned~={_sweep_scanned}",
+                    "INFO"
+                )
+            except Exception as _sweep_err:
+                log(f"COMPLETION_SWEEP_FAIL {_sweep_err}", "WARN")
+
         except Exception as e:
             log(f"Outlook connection error: {e}", "ERROR")
             errors_count += 1
@@ -3905,11 +4197,16 @@ def process_inbox():
         )
 
 def run_job():
-    """Main job: Process inbox"""
+    """Main job: Process inbox + reassign queue"""
     try:
         process_inbox()
     except Exception as e:
         log(f"Error in process_inbox: {e}", "ERROR")
+    # Process reassign queue independently (never crashes main loop)
+    try:
+        process_reassign_queue()
+    except Exception as e:
+        log(f"Error in process_reassign_queue: {e}", "ERROR")
 
 # ==================== MAIN ENTRY POINT ====================
 if __name__ == "__main__":
