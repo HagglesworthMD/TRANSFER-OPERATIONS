@@ -128,23 +128,27 @@ const ActivityFeed = {
         return null;
     },
 
-    async _openActiveModal() {
+    async _openActiveModal(staffName) {
         const modal = document.getElementById('active-modal');
         const meta = document.getElementById('active-modal-meta');
         const tbody = document.getElementById('active-modal-tbody');
+        const titleEl = document.getElementById('active-modal-title');
         if (!modal || !meta || !tbody) return;
 
         modal.classList.remove('hidden');
         meta.textContent = 'Loading active tickets...';
         tbody.innerHTML = '<tr><td colspan="9">Loading...</td></tr>';
+        if (titleEl) titleEl.textContent = staffName ? `Active Tickets \u2014 ${staffName}` : 'Active Tickets';
 
         try {
-            const params = this._currentDateParams();
+            const params = this._currentDateParams() || {};
+            if (staffName) params.staff = staffName;
             this._activeParams = params;
             const data = await DashboardAPI.getActive(params);
             this._activeRows = Array.isArray(data.rows) ? data.rows : [];
             this._renderActiveRows(this._activeRows);
-            meta.textContent = `${data.count || 0} active tickets (${data.date_start || ''} to ${data.date_end || ''})`;
+            const label = staffName ? `${staffName} \u2014 ` : '';
+            meta.textContent = `${label}${data.count || 0} active tickets (${data.date_start || ''} to ${data.date_end || ''})`;
             this._renderReconciledSection(data.reconciled || []);
         } catch (err) {
             meta.textContent = `Failed to load active tickets: ${err.message}`;
@@ -179,6 +183,9 @@ const ActivityFeed = {
             const reconcileBtn = hasIdentity
                 ? `<button class="btn-reconcile" data-idx="${idx}" title="Mark reconciled">Reconcile</button>`
                 : '';
+            const reassignBtn = sami
+                ? `<button class="btn-reassign" data-idx="${idx}" title="Reassign ticket">Reassign</button>`
+                : '';
 
             return `<tr>
                 <td>${this._esc(item.date)}</td>
@@ -189,13 +196,14 @@ const ActivityFeed = {
                 <td>${this._esc(item.domain)}</td>
                 <td>${this._esc(item.risk_level)}</td>
                 <td title="${this._esc(item.subject)}">${subjectHtml}</td>
-                <td>${reconcileBtn}</td>
+                <td>${reconcileBtn} ${reassignBtn}</td>
             </tr>`;
         });
 
         tbody.innerHTML = htmlRows.join('');
         this._wireRefCopy(tbody);
         this._wireReconcileButtons(tbody, rows);
+        this._wireReassignButtons(tbody, rows);
     },
 
     _wireReconcileButtons(container, rows) {
@@ -465,5 +473,142 @@ const ActivityFeed = {
         const d = document.createElement('div');
         d.textContent = str || '';
         return d.innerHTML;
+    },
+
+    // ── Reassign dialog ──────────────────────────────────────────
+
+    _wireReassignButtons(container, rows) {
+        container.querySelectorAll('.btn-reassign').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const idx = parseInt(btn.dataset.idx, 10);
+                const item = rows[idx];
+                if (!item) return;
+                const samiRef = (item.sami_ref || '').trim();
+                if (!samiRef) return;
+                await this._openReassignDialog(samiRef, (item.staff_email || item.staff || '').trim());
+            });
+        });
+    },
+
+    async _openReassignDialog(samiRef, currentStaff) {
+        const dialog = document.getElementById('reassign-dialog');
+        const backdrop = document.getElementById('reassign-dialog-backdrop');
+        const samiEl = document.getElementById('reassign-sami-ref');
+        const modeEl = document.getElementById('reassign-mode');
+        const staffField = document.getElementById('reassign-staff-field');
+        const staffSelect = document.getElementById('reassign-target-staff');
+        const reasonEl = document.getElementById('reassign-reason');
+        const noteEl = document.getElementById('reassign-note');
+        const confirmBtn = document.getElementById('reassign-confirm-btn');
+        const cancelBtn = document.getElementById('reassign-cancel-btn');
+        const errorEl = document.getElementById('reassign-error');
+        if (!dialog) return;
+
+        // Store context for submit
+        this._reassignSamiRef = samiRef;
+        this._reassignCurrentStaff = currentStaff;
+
+        // Populate fields
+        if (samiEl) samiEl.textContent = samiRef;
+        if (modeEl) modeEl.value = 'next_in_rotation';
+        if (reasonEl) reasonEl.value = 'leave';
+        if (noteEl) noteEl.value = '';
+        if (errorEl) { errorEl.textContent = ''; errorEl.classList.add('hidden'); }
+        if (staffField) staffField.classList.add('hidden');
+
+        // Populate staff dropdown from API
+        if (staffSelect) {
+            staffSelect.innerHTML = '<option value="">Loading...</option>';
+            try {
+                const data = await DashboardAPI.getStaff();
+                const allStaff = Array.isArray(data.staff) ? data.staff : (Array.isArray(data) ? data : []);
+                const off = new Set((data.off_rotation || []).map(e => e.toLowerCase()));
+                const leave = new Set((data.leave || []).map(e => e.toLowerCase()));
+                const currentLower = (currentStaff || '').toLowerCase();
+                const eligible = allStaff.filter(e => {
+                    const lower = e.toLowerCase();
+                    return lower !== currentLower && !off.has(lower) && !leave.has(lower);
+                });
+                if (eligible.length === 0) {
+                    staffSelect.innerHTML = '<option value="">No eligible staff</option>';
+                } else {
+                    staffSelect.innerHTML = eligible.map(e =>
+                        `<option value="${this._esc(e)}">${this._esc(e)}</option>`
+                    ).join('');
+                }
+            } catch (err) {
+                staffSelect.innerHTML = '<option value="">Failed to load staff</option>';
+            }
+        }
+
+        // Clone to remove old listeners
+        const newMode = modeEl.cloneNode(true);
+        modeEl.parentNode.replaceChild(newMode, modeEl);
+        const modeHandler = () => {
+            if (staffField) {
+                staffField.classList.toggle('hidden', newMode.value !== 'target_staff');
+            }
+        };
+        newMode.addEventListener('change', modeHandler);
+        modeHandler(); // ensure correct initial visibility
+
+        // Wire confirm
+        const newConfirm = confirmBtn.cloneNode(true);
+        confirmBtn.parentNode.replaceChild(newConfirm, confirmBtn);
+        newConfirm.addEventListener('click', () => this._submitReassign());
+
+        // Wire cancel + backdrop
+        const newCancel = cancelBtn.cloneNode(true);
+        cancelBtn.parentNode.replaceChild(newCancel, cancelBtn);
+        newCancel.addEventListener('click', () => this._closeReassignDialog());
+
+        const newBackdrop = backdrop.cloneNode(true);
+        backdrop.parentNode.replaceChild(newBackdrop, backdrop);
+        newBackdrop.addEventListener('click', () => this._closeReassignDialog());
+
+        dialog.classList.remove('hidden');
+    },
+
+    async _submitReassign() {
+        const modeEl = document.getElementById('reassign-mode');
+        const staffSelect = document.getElementById('reassign-target-staff');
+        const reasonEl = document.getElementById('reassign-reason');
+        const noteEl = document.getElementById('reassign-note');
+        const confirmBtn = document.getElementById('reassign-confirm-btn');
+        const errorEl = document.getElementById('reassign-error');
+
+        const mode = modeEl ? modeEl.value : 'next_in_rotation';
+        const targetStaff = (mode === 'target_staff' && staffSelect) ? staffSelect.value : '';
+        const reason = reasonEl ? reasonEl.value : '';
+        const note = noteEl ? noteEl.value : '';
+
+        if (mode === 'target_staff' && !targetStaff) {
+            if (errorEl) { errorEl.textContent = 'Please select a target staff member.'; errorEl.classList.remove('hidden'); }
+            return;
+        }
+
+        if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Submitting...'; }
+        if (errorEl) errorEl.classList.add('hidden');
+
+        try {
+            if (!this._reassignSamiRef) {
+                throw new Error('Missing SAMI reference.');
+            }
+            await DashboardAPI.reassign(this._reassignSamiRef, mode, targetStaff, reason, note);
+            this._closeReassignDialog();
+            await this._openActiveModal();
+        } catch (err) {
+            if (errorEl) { errorEl.textContent = err.message; errorEl.classList.remove('hidden'); }
+        } finally {
+            if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = 'Confirm Reassign'; }
+        }
+    },
+
+    _closeReassignDialog() {
+        const dialog = document.getElementById('reassign-dialog');
+        if (dialog) dialog.classList.add('hidden');
+        const errorEl = document.getElementById('reassign-error');
+        if (errorEl) { errorEl.textContent = ''; errorEl.classList.add('hidden'); }
     },
 };

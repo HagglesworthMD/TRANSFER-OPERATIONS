@@ -40,16 +40,28 @@ const KPITable = {
         const tbody = document.getElementById('kpi-tbody');
         if (tbody) {
             tbody.addEventListener('click', (e) => {
+                // Staff name click → CSV export
                 const cell = e.target.closest('.cell-name-link');
-                if (!cell) return;
-                const name = cell.dataset.name;
-                if (!name) return;
-                const dsEl = document.getElementById('date-start');
-                const deEl = document.getElementById('date-end');
-                const dateStart = dsEl ? dsEl.value : '';
-                const dateEnd = deEl ? deEl.value : '';
-                const url = `/api/staff-export?name=${encodeURIComponent(name)}&date_start=${encodeURIComponent(dateStart)}&date_end=${encodeURIComponent(dateEnd)}`;
-                window.open(url, '_blank');
+                if (cell) {
+                    const name = cell.dataset.name;
+                    if (!name) return;
+                    const dsEl = document.getElementById('date-start');
+                    const deEl = document.getElementById('date-end');
+                    const dateStart = dsEl ? dsEl.value : '';
+                    const dateEnd = deEl ? deEl.value : '';
+                    const url = `/api/staff-export?name=${encodeURIComponent(name)}&date_start=${encodeURIComponent(dateStart)}&date_end=${encodeURIComponent(dateEnd)}`;
+                    window.open(url, '_blank');
+                    return;
+                }
+                // Active count click → open active modal for that staff member
+                const activeLink = e.target.closest('.cell-active-link');
+                if (activeLink) {
+                    e.preventDefault();
+                    const staffName = activeLink.dataset.staff;
+                    if (staffName && typeof ActivityFeed !== 'undefined') {
+                        ActivityFeed._openActiveModal(staffName);
+                    }
+                }
             });
         }
     },
@@ -104,7 +116,7 @@ const KPITable = {
                 <td class="cell-name cell-name-link" data-name="${this._esc(s.name)}">${this._esc(s.name)}</td>
                 <td>${this._assignedMode === 'all' ? s.assigned : s.assigned_in_range}</td>
                 <td>${s.completed}</td>
-                <td>${s.active}</td>
+                <td>${s.active > 0 ? `<a class="cell-active-link" data-staff="${this._esc(s.name)}" href="#">${s.active}</a>` : s.active}</td>
                 <td>${s.median_human || '—'}${lcIcon}</td>
                 <td class="${p90Class}">${s.p90_human || '—'}${lcIcon}</td>
             </tr>`;
