@@ -1,4 +1,4 @@
-/* Main app — init + 15-second refresh loop + date range controls */
+/* Main app â€” init + 15-second refresh loop + date range controls */
 
 const App = {
     REFRESH_SEC: 15,
@@ -10,7 +10,6 @@ const App = {
     async init() {
         this._initThemeControls();
         KPITable.init();
-        SummaryCards.initToggleListener();
         StaffPanel.init();
         ActivityFeed.init();
         HourlyDetail.init();
@@ -237,7 +236,7 @@ const App = {
     },
 };
 
-// Boot — check session before initialising dashboard
+// Boot â€” check session before initialising dashboard
 document.addEventListener('DOMContentLoaded', async () => {
     const loginOverlay = document.getElementById('login-overlay');
     const loadingOverlay = document.getElementById('loading-overlay');
@@ -248,12 +247,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function tryBoot() {
         try {
             await DashboardAPI.checkSession();
-            // Authenticated — hide login, show loading, init dashboard
+            // Authenticated â€” hide login, show loading, init dashboard
             loginOverlay.classList.add('hidden');
             loadingOverlay.classList.remove('hidden');
             await App.init();
         } catch {
-            // Not authenticated — show login form
+            // Not authenticated â€” show login form
             loadingOverlay.classList.add('hidden');
             loginOverlay.classList.remove('hidden');
             document.getElementById('login-username').focus();

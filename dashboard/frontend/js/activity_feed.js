@@ -326,19 +326,70 @@ const ActivityFeed = {
     _wireRefCopy(container) {
         if (!container) return;
         container.querySelectorAll('.ref-badge').forEach(el => {
-            el.addEventListener('click', (e) => {
+            el.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                const ref = el.dataset.ref;
-                navigator.clipboard.writeText(ref).then(() => {
-                    el.classList.add('copied');
-                    el.setAttribute('title', 'Copied!');
-                    setTimeout(() => {
-                        el.classList.remove('copied');
-                        el.setAttribute('title', `Click to copy ${ref}`);
-                    }, 1500);
-                });
+                const ref = (el.dataset.ref || '').trim();
+                if (!ref) return;
+
+                const copied = await this._copyToClipboard(ref);
+                if (!copied) {
+                    console.warn('Clipboard copy failed for ref badge:', ref);
+                    return;
+                }
+
+                el.classList.add('copied');
+                el.setAttribute('title', 'Copied!');
+                setTimeout(() => {
+                    el.classList.remove('copied');
+                    el.setAttribute('title', `Click to copy ${ref}`);
+                }, 1500);
             });
         });
+    },
+
+    async _copyToClipboard(text) {
+        const value = `${text || ''}`;
+        if (!value) return false;
+
+        // navigator.clipboard often fails on LAN HTTP; keep a legacy fallback.
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+            try {
+                await navigator.clipboard.writeText(value);
+                return true;
+            } catch (err) {
+                // Fall through to execCommand fallback.
+            }
+        }
+
+        return this._copyWithExecCommand(value);
+    },
+
+    _copyWithExecCommand(text) {
+        const value = `${text || ''}`;
+        if (!value) return false;
+
+        const textarea = document.createElement('textarea');
+        textarea.value = value;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.top = '-9999px';
+        textarea.style.left = '-9999px';
+        textarea.style.opacity = '0';
+
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        textarea.setSelectionRange(0, textarea.value.length);
+
+        let copied = false;
+        try {
+            copied = document.execCommand('copy');
+        } catch (err) {
+            copied = false;
+        }
+
+        document.body.removeChild(textarea);
+        return copied;
     },
 
     _updateStaffFilter(feed) {
@@ -612,3 +663,4 @@ const ActivityFeed = {
         if (errorEl) { errorEl.textContent = ''; errorEl.classList.add('hidden'); }
     },
 };
+
