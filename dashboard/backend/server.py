@@ -576,7 +576,14 @@ def _load_system_buckets_json() -> tuple[dict | None, str | None]:
     held_domains, err = _normalize_list(data.get("held_domains"), kind="domain", field_name="held_domains")
     if err:
         return None, err
-    # Sender override lists (optional — backward compatible)
+    applications_direct_domains, err = _normalize_list(
+        data.get("applications_direct_domains"),
+        kind="domain",
+        field_name="applications_direct_domains",
+    )
+    if err:
+        return None, err
+    # Sender override lists (optional ? backward compatible)
     transfer_senders, err = _normalize_list(data.get("transfer_senders"), kind="email", field_name="transfer_senders")
     if err:
         return None, err
@@ -589,6 +596,13 @@ def _load_system_buckets_json() -> tuple[dict | None, str | None]:
     held_senders, err = _normalize_list(data.get("held_senders"), kind="email", field_name="held_senders")
     if err:
         return None, err
+    applications_direct_senders, err = _normalize_list(
+        data.get("applications_direct_senders"),
+        kind="email",
+        field_name="applications_direct_senders",
+    )
+    if err:
+        return None, err
     folders, err = _validate_folders(data.get("folders"))
     if err:
         return None, err
@@ -597,10 +611,12 @@ def _load_system_buckets_json() -> tuple[dict | None, str | None]:
         "system_notification_domains": system_notification_domains,
         "quarantine_domains": quarantine_domains,
         "held_domains": held_domains,
+        "applications_direct_domains": applications_direct_domains,
         "transfer_senders": transfer_senders,
         "system_notification_senders": system_notification_senders,
         "quarantine_senders": quarantine_senders,
         "held_senders": held_senders,
+        "applications_direct_senders": applications_direct_senders,
         "folders": folders,
     }, None
 
@@ -643,10 +659,12 @@ def _build_domain_policy_payload() -> dict:
         system_notification_domains = buckets_cfg.get("system_notification_domains", [])
         quarantine_domains = buckets_cfg.get("quarantine_domains", [])
         held_domains = buckets_cfg.get("held_domains", [])
+        applications_direct_domains = buckets_cfg.get("applications_direct_domains", [])
         transfer_senders = buckets_cfg.get("transfer_senders", [])
         system_notification_senders = buckets_cfg.get("system_notification_senders", [])
         quarantine_senders = buckets_cfg.get("quarantine_senders", [])
         held_senders = buckets_cfg.get("held_senders", [])
+        applications_direct_senders = buckets_cfg.get("applications_direct_senders", [])
         folders = buckets_cfg.get("folders", dict(_DEFAULT_FOLDERS))
     else:
         legacy = _read_domain_policy_legacy()
@@ -658,10 +676,12 @@ def _build_domain_policy_payload() -> dict:
         quarantine_domains = quarantine_domains or []
         held_domains, _ = _normalize_list(legacy.get("always_hold_domains", []), kind="domain", field_name="held_domains")
         held_domains = held_domains or []
+        applications_direct_domains = []
         transfer_senders = []
         system_notification_senders = []
         quarantine_senders = []
         held_senders = []
+        applications_direct_senders = []
         folders = dict(_DEFAULT_FOLDERS)
 
     return {
@@ -669,10 +689,12 @@ def _build_domain_policy_payload() -> dict:
         "system_notification_domains": system_notification_domains,
         "quarantine_domains": quarantine_domains,
         "held_domains": held_domains,
+        "applications_direct_domains": applications_direct_domains,
         "transfer_senders": transfer_senders,
         "system_notification_senders": system_notification_senders,
         "quarantine_senders": quarantine_senders,
         "held_senders": held_senders,
+        "applications_direct_senders": applications_direct_senders,
         "staff_round_robin": staff_rr,
         "apps_team_recipients": apps_recipients,
         "manager_recipients": manager_recipients,
@@ -707,6 +729,13 @@ def _save_domain_policy_payload(payload: dict) -> tuple[bool, str | None]:
     held_domains, err = _normalize_list(payload.get("held_domains"), kind="domain", field_name="held_domains")
     if err:
         return False, err
+    applications_direct_domains, err = _normalize_list(
+        payload.get("applications_direct_domains"),
+        kind="domain",
+        field_name="applications_direct_domains",
+    )
+    if err:
+        return False, err
     transfer_senders, err = _normalize_list(payload.get("transfer_senders"), kind="email", field_name="transfer_senders")
     if err:
         return False, err
@@ -717,6 +746,13 @@ def _save_domain_policy_payload(payload: dict) -> tuple[bool, str | None]:
     if err:
         return False, err
     held_senders, err = _normalize_list(payload.get("held_senders"), kind="email", field_name="held_senders")
+    if err:
+        return False, err
+    applications_direct_senders, err = _normalize_list(
+        payload.get("applications_direct_senders"),
+        kind="email",
+        field_name="applications_direct_senders",
+    )
     if err:
         return False, err
     folders, err = _validate_folders(payload.get("folders"))
@@ -731,10 +767,12 @@ def _save_domain_policy_payload(payload: dict) -> tuple[bool, str | None]:
         "system_notification_domains": system_notification_domains,
         "quarantine_domains": quarantine_domains,
         "held_domains": held_domains,
+        "applications_direct_domains": applications_direct_domains,
         "transfer_senders": transfer_senders,
         "system_notification_senders": system_notification_senders,
         "quarantine_senders": quarantine_senders,
         "held_senders": held_senders,
+        "applications_direct_senders": applications_direct_senders,
         "folders": folders,
     }
 
@@ -1165,6 +1203,64 @@ async def reconcile_all(request: Request):
     return {"ok": True, "count": len(entries)}
 
 
+# ── Reassignment queue ──────────────────────────────────────────
+
+@app.post("/api/reassign")
+async def reassign_ticket(request: Request):
+    """Queue a ticket reassignment for the bot to process on its next tick."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    sami_id = (body.get("sami_id") or "").strip()
+    if not sami_id:
+        raise HTTPException(status_code=400, detail="sami_id is required")
+
+    mode = body.get("mode", "next_in_rotation")
+    if mode not in ("next_in_rotation", "target_staff"):
+        raise HTTPException(status_code=400, detail="mode must be 'next_in_rotation' or 'target_staff'")
+
+    target_staff_email = (body.get("target_staff_email") or "").strip().lower()
+    if mode == "target_staff":
+        if not target_staff_email:
+            raise HTTPException(status_code=400, detail="target_staff_email required for target_staff mode")
+        staff_data, err = _load_staff_json()
+        if err or not staff_data:
+            raise HTTPException(status_code=500, detail=f"Failed to load staff list: {err}")
+        all_staff = [e.strip().lower() for e in staff_data.get("staff", [])]
+        off = set(e.strip().lower() for e in (staff_data.get("off_rotation") or []))
+        leave = set(e.strip().lower() for e in (staff_data.get("leave") or []))
+        eligible = [e for e in all_staff if e not in off and e not in leave]
+        if target_staff_email not in eligible:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{target_staff_email} is not eligible (off rotation, leave, or not in staff list)",
+            )
+
+    from datetime import datetime as _dt, timezone as _tz
+    entry = {
+        "request_id": f"reassign-{_dt.now(_tz.utc).strftime('%Y%m%dT%H%M%S')}-{sami_id}",
+        "sami_id": sami_id,
+        "mode": mode,
+        "target_staff_email": target_staff_email if mode == "target_staff" else "",
+        "reason": body.get("reason", ""),
+        "note": body.get("note", ""),
+        "requested_by": body.get("requested_by", "dashboard_admin"),
+        "requested_ts": _dt.now(_tz.utc).isoformat(),
+    }
+
+    queue_path = config.REASSIGN_QUEUE_JSON
+    existing, _ = _safe_load_json_direct(queue_path)
+    queue = existing if isinstance(existing, list) else []
+    queue.append(entry)
+    ok, err = _atomic_write_json(queue_path, queue)
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Failed to write reassign queue: {err}")
+
+    return {"ok": True, "request_id": entry["request_id"]}
+
+
 @app.get("/api/config/domain_policy")
 async def get_domain_policy_config():
     # Canonical merged view used by the Domain Policy & Staff panel.
@@ -1316,6 +1412,7 @@ _DOMAIN_BUCKETS = {
     "system_notification": "system_notification_domains",
     "always_hold": "held_domains",
     "quarantine": "quarantine_domains",
+    "applications_direct": "applications_direct_domains",
 }
 
 _SENDER_BUCKETS = {
@@ -1323,6 +1420,7 @@ _SENDER_BUCKETS = {
     "system_notification": "system_notification_senders",
     "always_hold": "held_senders",
     "quarantine": "quarantine_senders",
+    "applications_direct": "applications_direct_senders",
 }
 
 

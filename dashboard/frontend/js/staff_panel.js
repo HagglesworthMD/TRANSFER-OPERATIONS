@@ -3,8 +3,8 @@
 const StaffPanel = {
     _emailRegex: /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/,
 
-    _domainBuckets: ['external_image_request', 'system_notification', 'always_hold', 'quarantine'],
-    _senderBuckets: ['external_image_request', 'system_notification', 'always_hold', 'quarantine'],
+    _domainBuckets: ['external_image_request', 'system_notification', 'always_hold', 'quarantine', 'applications_direct'],
+    _senderBuckets: ['external_image_request', 'system_notification', 'always_hold', 'quarantine', 'applications_direct'],
 
     init() {
         const btn = document.getElementById('staff-add-btn');

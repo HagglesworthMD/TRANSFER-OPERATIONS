@@ -349,6 +349,24 @@
                     </div>
 
                     <div class="settings-section">
+                        <h3 class="settings-title">Applications Direct (Forward-only to Apps Team)</h3>
+                        <p class="settings-desc">Matches by sender domain or exact sender email. Forward-only to Apps Team. No completion hotlink.</p>
+                        <div class="staff-add-form">
+                            <input type="text" id="domain-applications_direct-input" placeholder="example.com" class="staff-input" />
+                            <button id="domain-applications_direct-add-btn" class="btn btn-add">Add</button>
+                        </div>
+                        <div class="staff-add-error hidden" id="domain-applications_direct-error"></div>
+                        <ul class="staff-list" id="domain-applications_direct-list"></ul>
+                        <p class="settings-desc" style="margin-top: 8px;">Sender overrides</p>
+                        <div class="staff-add-form">
+                            <input type="email" id="sender-applications_direct-input" placeholder="user@domain.com" class="staff-input" />
+                            <button id="sender-applications_direct-add-btn" class="btn btn-add">Add</button>
+                        </div>
+                        <div class="staff-add-error hidden" id="sender-applications_direct-error"></div>
+                        <ul class="staff-list" id="sender-applications_direct-list"></ul>
+                    </div>
+
+                    <div class="settings-section">
                         <h3 class="settings-title">Staff Round-Robin</h3>
                         <div class="staff-add-form">
                             <input type="email" id="staff-email-input" placeholder="email@example.com" class="staff-input" />

@@ -4,13 +4,14 @@
     "jonesradiology.com.au",
     "radiologysa.com.au",
     "drjones.com.au",
-    "i-med.com.au"
+    "i-med.com.au",
+    "petermac.org",
+    "alfred.org.au"
   ],
   "system_notification_domains": [
     "service-now.com",
     "health.telstra.com",
     "google.com",
-    "healthlink.net",
     "zedtechnologies.com.au",
     "carestream.com",
     "materialise.com",
@@ -18,20 +19,25 @@
     "klsmartin.com",
     "imagingsol.com.au",
     "its.jnj.com",
-    "everlightradiology.com",
-    "philips.com",
     "insidestategovernment.com.au",
     "jonesradiology.atlassian.net",
     "messaging.microsoft.com"
   ],
   "quarantine_domains": [],
   "held_domains": [],
+  "applications_direct_domains": [],
   "transfer_senders": [
-    "tracey.wickstein@sa.gov.au"
+    "tracey.wickstein@sa.gov.au",
+    "chelsea.calvert@sa.gov.au",
+    "annette.bishop-cordera@sa.gov.au",
+    "d.desouza@alfred.org.au"
   ],
-  "system_notification_senders": [],
+  "system_notification_senders": [
+    "jira@jonesradiology.atlassian.net"
+  ],
   "quarantine_senders": [],
   "held_senders": [],
+  "applications_direct_senders": [],
   "folders": {
     "completed": "01_COMPLETED",
     "non_actionable": "02_PROCESSED",
