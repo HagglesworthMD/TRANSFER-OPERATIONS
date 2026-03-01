@@ -5,7 +5,7 @@ const LiveInsights = {
         if (!data || !data.summary) return;
 
         const summary = data.summary;
-        const nextName = summary.next_staff || 'â€”';
+        const nextName = summary.next_staff || '\u2014';
 
         // Panel title
         this._set('insight-panel-title', `Next Up: ${nextName}`);
@@ -14,10 +14,10 @@ const LiveInsights = {
         const kpi = (data.staff_kpis || []).find(s => s.name === nextName);
 
         // Per-staff metrics
-        this._set('insight-active', kpi ? kpi.active : 'â€”');
-        this._set('insight-assigned', kpi ? kpi.assigned_in_range : '—');
-        this._set('insight-completed', kpi ? kpi.completed : 'â€”');
-        this._set('insight-median', kpi?.median_human || 'â€”');
+        this._set('insight-active', kpi ? kpi.active : '\u2014');
+        this._set('insight-assigned', kpi ? kpi.assigned_in_range : '\u2014');
+        this._set('insight-completed', kpi ? kpi.completed : '\u2014');
+        this._set('insight-median', kpi?.median_human || '\u2014');
     },
 
     _set(id, value) {
