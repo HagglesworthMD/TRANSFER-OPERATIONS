@@ -136,10 +136,11 @@
                             <tr>
                                 <th data-sort="name" class="sortable">Staff</th>
                                 <th data-sort="assigned" class="sortable" title="Unique SAMI jobs assigned during the selected date range. This is new work created in-range only.">Assigned <span class="tooltip-icon">?</span></th>
-                                <th data-sort="completed" class="sortable" title="Unique SAMI jobs completed during the selected date range. Reconciled items are also counted as completed for KPI balancing. This can be higher than Assigned when staff finish work that was assigned before the selected start date.">Completed <span class="tooltip-icon">?</span></th>
                                 <th data-sort="active" class="sortable" title="Open SAMI jobs as of the selected end date (includes carry-over backlog), so this can be higher than Assigned.">Active <span class="tooltip-icon">?</span></th>
+                                <th data-sort="completed" class="sortable" title="Unique SAMI jobs completed during the selected date range. Reconciled items are also counted as completed for KPI balancing. This includes work assigned before the selected start date, so Completed can exceed today's newly assigned work.">Completed <span class="tooltip-icon">?</span></th>
+                                <th data-sort="jira_followups" class="sortable" title="Unique Jira follow-up cases raised in the selected range for SAMI jobs originally handled by this staff member. Use this as a quality signal when a practice did not receive the study and requested a resend.">Jira Follow-ups <span class="tooltip-icon">?</span></th>
                                 <th data-sort="median_min" class="sortable" title="Median completion time across all data">Median Time <span class="tooltip-icon">?</span></th>
-                                <th data-sort="p90_min" class="sortable" title="90th percentile completion time â€” 90% of tasks complete faster than this">P90 Time <span class="tooltip-icon">?</span></th>
+                                <th data-sort="p90_min" class="sortable" title="90th percentile completion time - 90% of tasks complete faster than this">P90 Time <span class="tooltip-icon">?</span></th>
                             </tr>
                         </thead>
                         <tbody id="kpi-tbody"></tbody>

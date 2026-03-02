@@ -448,7 +448,7 @@ def _display_sami_ref(e: dict) -> str:
     sami_id = (e.get("sami_id") or "").strip().upper()
     if sami_id:
         return sami_id
-    return ""
+    return _extract_sami_ref((e.get("subject") or "").strip())
 
 
 def _normalise_subject_for_completion_match(subject: str) -> str:
@@ -487,7 +487,10 @@ def _resolve_group_key(e: dict) -> str:
 
 
 def _resolve_sami_group_key(e: dict) -> str:
-    return (e.get("sami_id") or "").strip().lower()
+    sami_id = (e.get("sami_id") or "").strip().lower()
+    if sami_id:
+        return sami_id
+    return _extract_sami_ref((e.get("subject") or "").strip()).lower()
 
 
 def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: str | None = None) -> list[dict]:
@@ -961,7 +964,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     # Group by staff email (canonical per-SAMI job metrics)
     staff_assigned: dict[str, int] = defaultdict(int)
     staff_assigned_in_range: dict[str, int] = defaultdict(int)
-    staff_jira_followup_reassigned: dict[str, int] = defaultdict(int)
+    staff_jira_followups: dict[str, int] = defaultdict(int)
     staff_completed: dict[str, int] = defaultdict(int)
     staff_active: dict[str, int] = defaultdict(int)
     staff_durations: dict[str, list[float]] = defaultdict(list)
@@ -1075,8 +1078,8 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             staff_assigned[assigned_email] += 1
         if key in assigned_keys_in_range:
             staff_assigned_in_range[assigned_email] += 1
-        if job.get("is_jira_followup") and initial_email and initial_email != assigned_email and _is_staff(initial_email) and _event_key(assigned_event) in latest_assignment_events_in_range:
-            staff_jira_followup_reassigned[initial_email] += 1
+        if job.get("is_jira_followup") and initial_email and _is_staff(initial_email) and (assigned_event.get("event_type") or "").strip().upper() == "JIRA_FOLLOWUP_ASSIGNED" and _event_key(assigned_event) in latest_assignment_events_in_range:
+            staff_jira_followups[initial_email] += 1
         if key in completed_keys_in_range and job.get("has_completed"):
             staff_completed[assigned_email] += 1
         if job.get("has_assigned") and not job.get("has_completed"):
@@ -1098,7 +1101,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             if count > 0 and email in canonical_staff_emails
         }
 
-    all_emails = set(staff_assigned) | set(staff_completed) | set(staff_jira_followup_reassigned) | set(reconciled_per_staff or {})
+    all_emails = set(staff_assigned) | set(staff_completed) | set(staff_jira_followups) | set(reconciled_per_staff or {})
     if external_active_by_staff:
         all_emails |= set(canonical_active_by_staff)
     else:
@@ -1122,7 +1125,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             "name": _staff_display_name(email),
             "assigned": assigned,
             "assigned_in_range": staff_assigned_in_range.get(email, 0),
-            "jira_followup_reassigned": staff_jira_followup_reassigned.get(email, 0),
+            "jira_followups": staff_jira_followups.get(email, 0),
             "completed": completed,
             "active": active,
             "median_min": median_min,
@@ -1355,8 +1358,8 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
 
     # ------------------------------------------------------------------
 
-    jira_reassigned_keys: set[str] = set()
-    if activity_mode == "jira_followup_reassigned" and activity_staff:
+    jira_followup_keys: set[str] = set()
+    if activity_mode == "jira_followups" and activity_staff:
         target_staff = activity_staff.strip().lower()
         jobs: dict[str, dict[str, Any]] = {}
         for e in all_events:
@@ -1381,7 +1384,7 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
                 if _is_staff(email):
                     job["latest_email"] = email
                     job["latest_event_type"] = event_type
-        jira_reassigned_keys = {
+        jira_followup_keys = {
             key for key, job in jobs.items()
             if job.get("is_jira_followup")
             and job.get("initial_email")
@@ -1389,14 +1392,12 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
                 job.get("initial_email") == target_staff
                 or _staff_display_name(job.get("initial_email") or "").lower() == target_staff
             )
-            and job.get("latest_email")
-            and job.get("latest_email") != job.get("initial_email")
         }
 
     # Only include events with a timestamp and a meaningful event type
     feed_events = [
         e for e in filtered
-        if e["event_ts"] and e["event_type"] in (("REASSIGN_MANUAL", "JIRA_FOLLOWUP_ASSIGNED") if activity_mode == "jira_followup_reassigned" else ("ASSIGNED", "COMPLETED"))
+        if e["event_ts"] and e["event_type"] in (("JIRA_FOLLOWUP_ASSIGNED",) if activity_mode == "jira_followups" else ("ASSIGNED", "COMPLETED"))
     ]
     feed_events.sort(key=lambda e: e["event_ts"], reverse=True)
 
@@ -1417,19 +1418,20 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
 
     # When a staff filter is active, keep only that person's events before
     # applying the limit so the user sees all their recent jobs.
-    if activity_mode == "jira_followup_reassigned" and activity_staff:
-        filtered_reassigned = []
-        for e in feed_events:
+    if activity_mode == "jira_followups" and activity_staff:
+        filtered_followups = [
+            e for e in feed_events
+            if _resolve_sami_group_key(e) in jira_followup_keys
+        ]
+        deduped_followups = []
+        seen_followup_keys: set[str] = set()
+        for e in filtered_followups:
             key = _resolve_sami_group_key(e)
-            if key not in jira_reassigned_keys:
+            if not key or key in seen_followup_keys:
                 continue
-            job = jobs.get(key) if 'jobs' in locals() else None
-            initial_email = (job or {}).get("initial_email")
-            assigned_email = (e.get("assigned_to") or "").strip().lower()
-            if not initial_email or assigned_email == initial_email:
-                continue
-            filtered_reassigned.append(e)
-        feed_events = filtered_reassigned
+            seen_followup_keys.add(key)
+            deduped_followups.append(e)
+        feed_events = deduped_followups
     elif staff_filter:
         sf_lower = staff_filter.strip().lower()
         feed_events = [

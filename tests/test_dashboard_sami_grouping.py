@@ -353,14 +353,14 @@ class DashboardSamiGroupingTests(unittest.TestCase):
         )
 
         by_email = self._staff_map(payload)
-        self.assertEqual(by_email["alice.smith@example.com"]["jira_followup_reassigned"], 1)
+        self.assertNotIn("alice.smith@example.com", by_email)
         self.assertEqual(by_email["bob.jones@example.com"]["assigned"], 1)
         self.assertEqual(by_email["bob.jones@example.com"]["assigned_in_range"], 1)
         self.assertEqual(by_email["bob.jones@example.com"]["completed"], 1)
         self.assertEqual(by_email["bob.jones@example.com"]["active"], 0)
 
 
-    def test_non_jira_reassignment_is_not_counted_as_jira_followup_reassigned(self):
+    def test_non_jira_followup_is_not_counted_as_jira_followups(self):
         rows = [
             self._row(
                 date=self.DAY,
@@ -395,19 +395,19 @@ class DashboardSamiGroupingTests(unittest.TestCase):
         )
 
         by_email = self._staff_map(payload)
-        self.assertEqual(by_email["alice.smith@example.com"]["jira_followup_reassigned"], 0)
+        self.assertEqual(by_email["alice.smith@example.com"]["jira_followups"], 0)
 
 
-    def test_jira_followup_reassignment_counts_on_original_owner(self):
+    def test_jira_followup_followup_counts_on_original_owner(self):
         rows = [
             self._row(
                 date=self.DAY,
                 time="09:00:00",
-                subject="Jira follow-up assignment",
-                event_type="JIRA_FOLLOWUP_ASSIGNED",
-                action="JIRA_FOLLOWUP",
+                subject="Original assignment",
+                event_type="ASSIGNED",
+                action="IMAGE_REQUEST_EXTERNAL/DOMAIN",
                 assigned_to="alice.smith@example.com",
-                sender="jira@example.com",
+                sender="requester@example.com",
                 msg_key="jira-1",
                 sami_id="SAMI-JIRA1",
                 assigned_ts=f"{self.DAY}T09:00:00",
@@ -415,12 +415,12 @@ class DashboardSamiGroupingTests(unittest.TestCase):
             self._row(
                 date=self.DAY,
                 time="09:30:00",
-                subject="REASSIGN: SAMI-JIRA1 alice.smith@example.com -> bob.jones@example.com",
-                event_type="REASSIGN_MANUAL",
-                assigned_to="bob.jones@example.com",
-                sender="dashboard_admin",
+                subject="Request ID: ITSD-1 | [COMPLETED] [SAMI-JIRA1] Jira follow-up assignment",
+                event_type="JIRA_FOLLOWUP_ASSIGNED",
+                assigned_to="alice.smith@example.com",
+                sender="jira@example.com",
                 msg_key="jira-2",
-                sami_id="SAMI-JIRA1",
+                sami_id="",
                 action="JIRA_FOLLOWUP",
                 assigned_ts=f"{self.DAY}T09:30:00",
             ),
@@ -449,20 +449,19 @@ class DashboardSamiGroupingTests(unittest.TestCase):
         )
 
         by_email = self._staff_map(payload)
-        self.assertEqual(by_email["alice.smith@example.com"]["jira_followup_reassigned"], 1)
-        self.assertEqual(by_email["bob.jones@example.com"]["jira_followup_reassigned"], 0)
+        self.assertEqual(by_email["alice.smith@example.com"]["jira_followups"], 1)
 
 
-    def test_jira_followup_reassignment_respects_selected_date_range(self):
+    def test_jira_followup_followup_respects_selected_date_range(self):
         rows = [
             self._row(
                 date="2026-02-18",
                 time="09:00:00",
-                subject="Jira follow-up assignment",
-                event_type="JIRA_FOLLOWUP_ASSIGNED",
-                action="JIRA_FOLLOWUP",
+                subject="Original assignment",
+                event_type="ASSIGNED",
+                action="IMAGE_REQUEST_EXTERNAL/DOMAIN",
                 assigned_to="alice.smith@example.com",
-                sender="jira@example.com",
+                sender="requester@example.com",
                 msg_key="jira-range-1",
                 sami_id="SAMI-JIRARANGE1",
                 assigned_ts="2026-02-18T09:00:00",
@@ -502,20 +501,20 @@ class DashboardSamiGroupingTests(unittest.TestCase):
             reconciled_set=set(),
         )
 
-        self.assertEqual(self._staff_map(same_day)["alice.smith@example.com"]["jira_followup_reassigned"], 1)
+        self.assertEqual(self._staff_map(same_day)["alice.smith@example.com"]["jira_followups"], 1)
         self.assertNotIn("alice.smith@example.com", self._staff_map(next_day))
 
 
-    def test_activity_feed_can_filter_jira_followup_reassignments_for_original_owner(self):
+    def test_activity_feed_can_filter_jira_followup_followups_for_original_owner(self):
         rows = [
             self._row(
                 date=self.DAY,
                 time="09:00:00",
-                subject="Jira follow-up assignment",
-                event_type="JIRA_FOLLOWUP_ASSIGNED",
-                action="JIRA_FOLLOWUP",
+                subject="Original assignment",
+                event_type="ASSIGNED",
+                action="IMAGE_REQUEST_EXTERNAL/DOMAIN",
                 assigned_to="alice.smith@example.com",
-                sender="jira@example.com",
+                sender="requester@example.com",
                 msg_key="jira-af-1",
                 sami_id="SAMI-JIRAFILT1",
                 assigned_ts=f"{self.DAY}T09:00:00",
@@ -523,13 +522,13 @@ class DashboardSamiGroupingTests(unittest.TestCase):
             self._row(
                 date=self.DAY,
                 time="09:30:00",
-                subject="Jira follow-up reassigned",
+                subject="Request ID: ITSD-2 | [COMPLETED] [SAMI-JIRAFILT1] Jira follow-up assignment",
                 event_type="JIRA_FOLLOWUP_ASSIGNED",
                 assigned_to="bob.jones@example.com",
-                sender="dashboard_admin",
+                sender="jira@example.com",
                 msg_key="jira-af-2",
-                sami_id="SAMI-JIRAFILT1",
-                action="REASSIGN",
+                sami_id="",
+                action="JIRA_FOLLOWUP",
                 assigned_ts=f"{self.DAY}T09:30:00",
             ),
             self._row(
@@ -566,14 +565,14 @@ class DashboardSamiGroupingTests(unittest.TestCase):
             date_start=self.DAY,
             date_end=self.DAY,
             reconciled_set=set(),
-            activity_mode="jira_followup_reassigned",
+            activity_mode="jira_followups",
             activity_staff="Alice Smith",
         )
 
         self.assertEqual(len(payload["activity_feed"]), 1)
         self.assertEqual(payload["activity_feed"][0]["type"], "JIRA_FOLLOWUP_ASSIGNED")
         self.assertEqual(payload["activity_feed"][0]["sami_ref"], "SAMI-JIRAFILT1")
-        self.assertEqual(payload["activity_feed"][0]["sender"], "dashboard_admin")
+        self.assertEqual(payload["activity_feed"][0]["sender"], "Jira")
 
 
     def test_reconciled_active_item_counts_as_completed_in_range(self):

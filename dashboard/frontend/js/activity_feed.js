@@ -140,18 +140,18 @@ const ActivityFeed = {
         };
     },
 
-    async focusJiraFollowupReassigned(staffName) {
+    async focusJiraFollowups(staffName) {
         if (!staffName) return;
         const filterSelect = document.getElementById('staff-filter');
         const clearBtn = document.getElementById('clear-filter');
         if (filterSelect) filterSelect.value = '';
         this._currentFilter = '';
-        this._specialFilter = { mode: 'jira_followup_reassigned', staff: staffName };
+        this._specialFilter = { mode: 'jira_followups', staff: staffName };
         if (clearBtn) clearBtn.style.display = 'inline-block';
-        await this._openJiraFollowupReassignedModal(staffName);
+        await this._openJiraFollowupsModal(staffName);
     },
 
-    async _openJiraFollowupReassignedModal(staffName) {
+    async _openJiraFollowupsModal(staffName) {
         const modal = document.getElementById('active-modal');
         const meta = document.getElementById('active-modal-meta');
         const tbody = document.getElementById('active-modal-tbody');
@@ -160,23 +160,23 @@ const ActivityFeed = {
         if (!modal || !meta || !tbody) return;
 
         modal.classList.remove('hidden');
-        meta.textContent = 'Loading Jira follow-up reassignments...';
+        meta.textContent = 'Loading Jira follow-ups...';
         tbody.innerHTML = '<tr><td colspan="9">Loading...</td></tr>';
-        if (titleEl) titleEl.textContent = `Jira Follow-up Reassigned - ${staffName}`;
+        if (titleEl) titleEl.textContent = `Jira Follow-ups - ${staffName}`;
         if (downloadBtn) downloadBtn.style.display = 'none';
 
         try {
             const params = this._currentDateParams() || {};
             delete params.staff;
-            params.activityMode = 'jira_followup_reassigned';
+            params.activityMode = 'jira_followups';
             params.activityStaff = staffName;
             const data = await DashboardAPI.getDashboard(params);
             const rows = Array.isArray(data.activity_feed) ? data.activity_feed : [];
-            this._renderJiraReassignedRows(rows);
-            meta.textContent = `${staffName} - ${rows.length} Jira follow-up reassignments (${data.date_start || ''} to ${data.date_end || ''})`;
+            this._renderJiraFollowupRows(rows);
+            meta.textContent = `${staffName} - ${rows.length} Jira follow-ups (${data.date_start || ''} to ${data.date_end || ''})`;
         } catch (err) {
-            meta.textContent = `Failed to load Jira follow-up reassignments: ${err.message}`;
-            tbody.innerHTML = '<tr><td colspan="9">Failed to load Jira follow-up reassignments.</td></tr>';
+            meta.textContent = `Failed to load Jira follow-ups: ${err.message}`;
+            tbody.innerHTML = '<tr><td colspan="9">Failed to load Jira follow-ups.</td></tr>';
         }
     },
 
@@ -217,12 +217,12 @@ const ActivityFeed = {
         }
     },
 
-    _renderJiraReassignedRows(rows) {
+    _renderJiraFollowupRows(rows) {
         const tbody = document.getElementById('active-modal-tbody');
         if (!tbody) return;
 
         if (!rows || rows.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9">No Jira follow-up reassignments found for this date range.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="9">No Jira follow-ups found for this date range.</td></tr>';
             return;
         }
 
