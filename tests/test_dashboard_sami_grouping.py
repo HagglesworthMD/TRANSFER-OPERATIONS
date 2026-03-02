@@ -238,6 +238,8 @@ class DashboardSamiGroupingTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["active_count"], 1)
         self.assertEqual(sum(r["active"] for r in payload["staff_kpis"]), 1)
 
+
+
     def test_summary_flags_unmatched_completion_jobs(self):
         rows = [
             self._row(
@@ -302,6 +304,51 @@ class DashboardSamiGroupingTests(unittest.TestCase):
 
         self.assertEqual(payload["summary"]["processed_today"], 1)
         self.assertEqual(payload["summary"]["completions_today"], 0)
+
+    def test_reconciled_active_item_counts_as_completed_in_range(self):
+        from unittest.mock import patch
+
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="10:00:00",
+                subject="Open but reconciled",
+                event_type="ASSIGNED",
+                assigned_to="alice.smith@example.com",
+                msg_key="rec-1",
+                sami_id="SAMI-REC001",
+            ),
+        ]
+
+        fake_state = {
+            "version": 1,
+            "reconciled": [
+                {
+                    "identity": "SAMI-REC001",
+                    "staff_email": "alice.smith@example.com",
+                    "reason": "balanced",
+                    "ts": f"{self.DAY}T12:00:00+00:00",
+                    "sami_ref": "SAMI-REC001",
+                }
+            ],
+        }
+        with patch("dashboard.backend.reconciliation.load_reconciled", return_value=fake_state):
+            payload = compute_dashboard(
+                rows,
+                roster_state=None,
+                settings=None,
+                staff_list=["alice.smith@example.com"],
+                hib_state=None,
+                date_start=self.DAY,
+                date_end=self.DAY,
+                reconciled_set={"SAMI-REC001"},
+            )
+
+        by_email = self._staff_map(payload)
+        self.assertEqual(payload["summary"]["active_count"], 0)
+        self.assertEqual(payload["summary"]["completions_today"], 1)
+        self.assertEqual(by_email["alice.smith@example.com"]["completed"], 1)
+        self.assertEqual(by_email["alice.smith@example.com"]["active"], 0)
 
 
 if __name__ == "__main__":

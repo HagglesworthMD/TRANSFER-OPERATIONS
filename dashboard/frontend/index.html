@@ -96,7 +96,7 @@
             </div>
             <div class="card summary-card" data-key="completions_today">
                 <div class="card-label">Completions <span class="tooltip-icon" title="Unique SAMI jobs completed in range and matched to an assignment lifecycle. This can be higher than Processed when staff clear carry-over jobs assigned before the selected range.">?</span></div>
-                <div class="card-value" id="card-completions">â€”</div>
+                <div class="card-value" id="card-completions">&mdash;</div>
                 <div class="card-sublabel" id="card-completions-detail"></div>
             </div>
             <div class="card summary-card card-clickable" data-key="active_count" id="active-card" title="Click to view active tickets">
@@ -135,8 +135,8 @@
                         <thead>
                             <tr>
                                 <th data-sort="name" class="sortable">Staff</th>
-                                <th data-sort="assigned" class="sortable" title="Unique SAMI jobs assigned during the selected date range.">Assigned <span class="tooltip-icon">?</span></th>
-                                <th data-sort="completed" class="sortable" title="Unique SAMI jobs completed during the selected date range.">Completed <span class="tooltip-icon">?</span></th>
+                                <th data-sort="assigned" class="sortable" title="Unique SAMI jobs assigned during the selected date range. This is new work created in-range only.">Assigned <span class="tooltip-icon">?</span></th>
+                                <th data-sort="completed" class="sortable" title="Unique SAMI jobs completed during the selected date range. Reconciled items are also counted as completed for KPI balancing. This can be higher than Assigned when staff finish work that was assigned before the selected start date.">Completed <span class="tooltip-icon">?</span></th>
                                 <th data-sort="active" class="sortable" title="Open SAMI jobs as of the selected end date (includes carry-over backlog), so this can be higher than Assigned.">Active <span class="tooltip-icon">?</span></th>
                                 <th data-sort="median_min" class="sortable" title="Median completion time across all data">Median Time <span class="tooltip-icon">?</span></th>
                                 <th data-sort="p90_min" class="sortable" title="90th percentile completion time â€” 90% of tasks complete faster than this">P90 Time <span class="tooltip-icon">?</span></th>

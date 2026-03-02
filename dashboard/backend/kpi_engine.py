@@ -490,17 +490,9 @@ def _resolve_sami_group_key(e: dict) -> str:
     return (e.get("sami_id") or "").strip().lower()
 
 
-def export_active_events(rows: list[dict], date_start: str, date_end: str,
-                         staff_name: str | None = None,
-                         reconciled_set: set[str] | None = None) -> list[dict]:
-    """Return likely-open ASSIGNED tickets with SAMI references for CSV/export.
-
-    Active scope is "open as of end date": include assignments on or before
-    date_end that are not completed by date_end. date_start is accepted for
-    API compatibility but does not constrain active backlog.
-    """
+def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: str | None = None) -> list[dict]:
+    """Return likely-open ticket identities as of *date_end* before reconciliation filtering."""
     events = _normalise_rows(rows)
-    _ = date_start
     candidates = [
         e for e in events
         if e.get("event_type") in ("ASSIGNED", "REASSIGN_MANUAL") and (not (e.get("date") or "") or (e.get("date") or "") <= date_end)
@@ -563,13 +555,26 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
             "event_ts": current_ts,
         }
 
-    # Filter out reconciled identities BEFORE aggregation/output
-    if reconciled_set:
-        for rid in reconciled_set:
-            latest_by_identity.pop(rid, None)
-
     rows_out = list(latest_by_identity.values())
     rows_out.sort(key=lambda r: (r.get("event_ts") is not None, r.get("event_ts"), r.get("Date", ""), r.get("Time", "")), reverse=True)
+    return rows_out
+
+
+def export_active_events(rows: list[dict], date_start: str, date_end: str,
+                         staff_name: str | None = None,
+                         reconciled_set: set[str] | None = None) -> list[dict]:
+    """Return likely-open ASSIGNED tickets with SAMI references for CSV/export.
+
+    Active scope is "open as of end date": include assignments on or before
+    date_end that are not completed by date_end. date_start is accepted for
+    API compatibility but does not constrain active backlog.
+    """
+    _ = date_start
+    rows_out = _collect_active_identity_rows(rows, date_end, staff_name=staff_name)
+
+    # Filter out reconciled identities BEFORE aggregation/output
+    if reconciled_set:
+        rows_out = [r for r in rows_out if r.get("Identity") not in reconciled_set]
     for r in rows_out:
         r.pop("event_ts", None)
     return rows_out
@@ -694,13 +699,20 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
             completed_matched_keys.add(key)
 
     processed = len(processed_keys)
-    completions = len(completed_matched_keys)
-    completions_unmatched = len(completed_keys_in_range - completed_matched_keys)
 
     # Keep summary active_count in parity with /api/active modal output.
-    active_rows = export_active_events(
-        rows, ds, de, staff_name=staff_filter, reconciled_set=reconciled_set
-    )
+    active_rows_all = _collect_active_identity_rows(rows, de, staff_name=staff_filter)
+    reconciled_completed_rows = []
+    if reconciled_set:
+        reconciled_completed_rows = [
+            row for row in active_rows_all
+            if row.get("Identity") in reconciled_set and ds <= (row.get("Date") or "") <= de
+        ]
+    reconciled_completed_count = len(reconciled_completed_rows)
+    completions = len(completed_matched_keys) + reconciled_completed_count
+    completions_unmatched = len(completed_keys_in_range - completed_matched_keys)
+
+    active_rows = [row for row in active_rows_all if row.get("Identity") not in (reconciled_set or set())]
     active_count = len(active_rows)
     active_by_staff: dict[str, int] = defaultdict(int)
     for row in active_rows:
@@ -804,11 +816,9 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     # ── Per-staff KPIs (filtered range for counts, all events for active) ──
     _reconciled_per_staff: dict[str, int] | None = None
     if reconciled_set:
-        from .reconciliation import load_reconciled
-        _rec_state = load_reconciled()
         _rps: dict[str, int] = defaultdict(int)
-        for entry in _rec_state.get("reconciled", []):
-            email = (entry.get("staff_email") or "").strip().lower()
+        for row in reconciled_completed_rows:
+            email = (row.get("Staff Email") or "").strip().lower()
             if email:
                 _rps[email] += 1
         _reconciled_per_staff = _rps
@@ -936,7 +946,6 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     # legacy reconciliation/active overrides.
     _ = date_start
     _ = date_end
-    _ = reconciled_per_staff
     external_active_by_staff = active_by_staff is not None
     active_by_staff = active_by_staff or {}
 
@@ -1061,7 +1070,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             if count > 0 and email in canonical_staff_emails
         }
 
-    all_emails = set(staff_assigned) | set(staff_completed)
+    all_emails = set(staff_assigned) | set(staff_completed) | set(reconciled_per_staff or {})
     if external_active_by_staff:
         all_emails |= set(canonical_active_by_staff)
     else:
@@ -1069,7 +1078,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     result = []
     for email in sorted(all_emails):
         assigned = staff_assigned.get(email, 0)
-        completed = staff_completed.get(email, 0)
+        completed = staff_completed.get(email, 0) + (reconciled_per_staff.get(email, 0) if reconciled_per_staff else 0)
         if external_active_by_staff:
             active = canonical_active_by_staff.get(email, 0)
         else:
