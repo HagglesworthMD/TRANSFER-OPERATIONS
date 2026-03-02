@@ -10,6 +10,7 @@ import secrets
 import sys
 from datetime import datetime
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -243,6 +244,17 @@ def _seconds_between(start: datetime | None, end: datetime | None) -> float | No
         return (end.replace(tzinfo=None) - start.replace(tzinfo=None)).total_seconds()
 
 
+def _format_elapsed_for_audit(seconds: float | None) -> str:
+    if seconds is None or seconds < 0:
+        return ""
+    minutes = seconds / 60.0
+    if minutes > 60.0:
+        return f"{minutes / 60.0:.2f} hrs"
+    if abs(minutes - round(minutes)) < 0.005:
+        return f"{int(round(minutes))} min"
+    return f"{minutes:.2f} min"
+
+
 def _resolve_audit_staff_email(row: dict, event_type: str) -> str:
     staff = (row.get("assigned_to") or row.get("Assigned To") or "").strip().lower()
     sender = (row.get("Sender") or "").strip().lower()
@@ -284,27 +296,26 @@ def _build_sami_audit_csv(rows: list[dict] | None, sami_ref: str) -> tuple[list[
     raw_fieldnames = _collect_row_fieldnames(matched)
     if not matched:
         audit_fields = [
-            "Audit SAMI Ref",
-            "Manager Assigned TS",
-            "Manager Completed TS",
-            "Manager Assigned -> Completed (mins)",
-            "Audit Event Seq",
-            "Audit Event Type",
-            "Audit Action",
-            "Audit Follow Up",
-            "Audit Lifecycle Status",
-            "Audit Total Events",
-            "Audit Assigned Count",
-            "Audit Completed Count",
-            "Audit Follow Up Count",
-            "Audit First Assigned TS",
-            "Audit Last Completed TS",
-            "Audit Elapsed Minutes",
-            "Audit Staff Email",
+            "SAMI Ref",
+            "Status",
+            "Open",
+            "Completed",
+            "Follow Up Count",
+            "Assigned At",
+            "Completed At",
+            "Assigned to Completed",
+            "Assigned Count",
+            "Completed Count",
+            "Total Events",
+            "Event #",
+            "Event Time",
+            "Event Type",
+            "Action",
+            "Follow Up",
+            "Staff Email",
             "Audit Row SAMI Source",
             "Audit Subject SAMI Ref",
             "Audit SAMI Mismatch",
-            "Audit Resolved Event TS",
             "Audit Matched By",
         ]
         return [], audit_fields
@@ -352,9 +363,7 @@ def _build_sami_audit_csv(rows: list[dict] | None, sami_ref: str) -> tuple[list[
         default=None,
     )
     elapsed_seconds = _seconds_between(first_assigned_ts, last_completed_ts)
-    elapsed_minutes = ""
-    if elapsed_seconds is not None and elapsed_seconds >= 0:
-        elapsed_minutes = f"{elapsed_seconds / 60.0:.2f}"
+    elapsed_display = _format_elapsed_for_audit(elapsed_seconds)
 
     assigned_count = len(assigned_events)
     completed_count = len(completed_events)
@@ -372,27 +381,26 @@ def _build_sami_audit_csv(rows: list[dict] | None, sami_ref: str) -> tuple[list[
 
     target_ref = _normalize_sami_lookup(sami_ref)
     audit_fields = [
-        "Audit SAMI Ref",
-        "Manager Assigned TS",
-        "Manager Completed TS",
-        "Manager Assigned -> Completed (mins)",
-        "Audit First Assigned TS",
-        "Audit Last Completed TS",
-        "Audit Elapsed Minutes",
-        "Audit Lifecycle Status",
-        "Audit Assigned Count",
-        "Audit Completed Count",
-        "Audit Follow Up Count",
-        "Audit Total Events",
-        "Audit Event Seq",
-        "Audit Event Type",
-        "Audit Action",
-        "Audit Follow Up",
-        "Audit Staff Email",
+        "SAMI Ref",
+        "Status",
+        "Open",
+        "Completed",
+        "Follow Up Count",
+        "Assigned At",
+        "Completed At",
+        "Assigned to Completed",
+        "Assigned Count",
+        "Completed Count",
+        "Total Events",
+        "Event #",
+        "Event Time",
+        "Event Type",
+        "Action",
+        "Follow Up",
+        "Staff Email",
         "Audit Row SAMI Source",
         "Audit Subject SAMI Ref",
         "Audit SAMI Mismatch",
-        "Audit Resolved Event TS",
         "Audit Matched By",
     ]
 
@@ -400,27 +408,26 @@ def _build_sami_audit_csv(rows: list[dict] | None, sami_ref: str) -> tuple[list[
     for seq, item in enumerate(staged, start=1):
         raw_row = item.get("_raw_row") or {}
         out = {
-            "Audit SAMI Ref": target_ref,
-            "Manager Assigned TS": _format_audit_ts(first_assigned_ts),
-            "Manager Completed TS": _format_audit_ts(last_completed_ts),
-            "Manager Assigned -> Completed (mins)": elapsed_minutes,
-            "Audit First Assigned TS": _format_audit_ts(first_assigned_ts),
-            "Audit Last Completed TS": _format_audit_ts(last_completed_ts),
-            "Audit Elapsed Minutes": elapsed_minutes,
-            "Audit Lifecycle Status": lifecycle_status,
-            "Audit Assigned Count": assigned_count,
-            "Audit Completed Count": completed_count,
-            "Audit Follow Up Count": follow_up_count,
-            "Audit Total Events": total_events,
-            "Audit Event Seq": seq,
-            "Audit Event Type": item.get("_event_type") or "",
-            "Audit Action": (raw_row.get("Action") or "").strip(),
-            "Audit Follow Up": "yes" if item.get("_follow_up") else "no",
-            "Audit Staff Email": item.get("_staff_email") or "",
+            "SAMI Ref": target_ref,
+            "Status": lifecycle_status,
+            "Open": "yes" if assigned_count > completed_count else "no",
+            "Completed": "yes" if completed_count > 0 else "no",
+            "Follow Up Count": follow_up_count,
+            "Assigned At": _format_audit_ts(first_assigned_ts),
+            "Completed At": _format_audit_ts(last_completed_ts),
+            "Assigned to Completed": elapsed_display,
+            "Assigned Count": assigned_count,
+            "Completed Count": completed_count,
+            "Total Events": total_events,
+            "Event #": seq,
+            "Event Time": _format_audit_ts(item.get("_event_ts")),
+            "Event Type": item.get("_event_type") or "",
+            "Action": (raw_row.get("Action") or "").strip(),
+            "Follow Up": "yes" if item.get("_follow_up") else "no",
+            "Staff Email": item.get("_staff_email") or "",
             "Audit Row SAMI Source": _row_sami_source(raw_row),
             "Audit Subject SAMI Ref": _subject_sami_ref(raw_row),
             "Audit SAMI Mismatch": "yes" if (_row_sami_ref(raw_row) and _subject_sami_ref(raw_row) and _row_sami_ref(raw_row) != _subject_sami_ref(raw_row)) else "no",
-            "Audit Resolved Event TS": _format_audit_ts(item.get("_event_ts")),
             "Audit Matched By": "sami_id",
         }
         for key in raw_fieldnames:
@@ -428,6 +435,163 @@ def _build_sami_audit_csv(rows: list[dict] | None, sami_ref: str) -> tuple[list[
         csv_rows.append(out)
 
     return csv_rows, audit_fields + raw_fieldnames
+
+
+def _spreadsheetml_data(value) -> tuple[str, str]:
+    if isinstance(value, bool):
+        return 'String', 'yes' if value else 'no'
+    if isinstance(value, (int, float)) and value != '':
+        return 'Number', str(value)
+    return 'String', escape('' if value is None else str(value))
+
+
+def _spreadsheetml_style(kind: str, field: str, value) -> str:
+    text = '' if value is None else str(value)
+    upper = text.upper()
+    if kind == 'summary':
+        if field == 'Status':
+            return {
+                'OPEN': 'status_open',
+                'CLOSED': 'status_closed',
+                'COMPLETED_ONLY': 'status_completed_only',
+            }.get(upper, 'status_unknown')
+        if field in ('Open', 'Completed'):
+            return 'flag_yes' if text == 'yes' else 'flag_no'
+        if field == 'Follow Up Count' and str(value).isdigit() and int(value) > 0:
+            return 'count_highlight'
+        if field == 'Assigned to Completed' and text.endswith('hrs'):
+            return 'duration_long'
+        return 'summary_cell'
+    if field == 'Event Type':
+        if upper == 'ASSIGNED':
+            return 'event_assigned'
+        if upper == 'COMPLETED':
+            return 'event_completed'
+        if 'FOLLOW' in upper or 'JIRA' in upper or 'REPLY' in upper:
+            return 'event_follow_up'
+        return 'cell_center'
+    if field == 'Follow Up':
+        return 'flag_yes' if text == 'yes' else 'flag_no'
+    if field in ('Subject', 'Note', 'Body'):
+        return 'cell_wrap'
+    if field in ('Event #', 'Assigned Count', 'Completed Count', 'Follow Up Count', 'Total Events'):
+        return 'cell_center'
+    return 'cell'
+
+
+def _spreadsheetml_width(field: str, values: list[object]) -> int:
+    preferred = {
+        'SAMI Ref': 16,
+        'Status': 14,
+        'Assigned to Completed': 18,
+        'Assigned At': 22,
+        'Completed At': 22,
+        'Event Time': 22,
+        'Staff Email': 28,
+        'Subject': 48,
+        'Action': 26,
+    }
+    max_len = max([len(field)] + [len('' if v is None else str(v)) for v in values])
+    chars = max(preferred.get(field, 12), min(max_len + 2, 48))
+    return chars * 6
+
+
+def _build_spreadsheetml_worksheet(name: str, fields: list[str], rows: list[dict], kind: str) -> str:
+    safe_name = escape(name, {'"': '&quot;'})
+    lines = [f'<Worksheet ss:Name="{safe_name}">', '<Table>']
+    for field in fields:
+        col_values = [row.get(field, '') for row in rows]
+        lines.append(f'<Column ss:AutoFitWidth="1" ss:Width="{_spreadsheetml_width(field, col_values)}"/>')
+    lines.append('<Row ss:StyleID="header">')
+    for field in fields:
+        lines.append(f'<Cell><Data ss:Type="String">{escape(field)}</Data></Cell>')
+    lines.append('</Row>')
+    for row in rows:
+        lines.append('<Row>')
+        for field in fields:
+            value = row.get(field, '')
+            style = _spreadsheetml_style(kind, field, value)
+            data_type, payload = _spreadsheetml_data(value)
+            lines.append(f'<Cell ss:StyleID="{style}"><Data ss:Type="{data_type}">{payload}</Data></Cell>')
+        lines.append('</Row>')
+    lines.append('</Table>')
+    if rows:
+        lines.append(f'<AutoFilter x:Range="R1C1:R{len(rows) + 1}C{len(fields)}" xmlns="urn:schemas-microsoft-com:office:excel" />')
+    lines.append('<WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><FreezePanes/><FrozenNoSplit/><SplitHorizontal>1</SplitHorizontal><TopRowBottomPane>1</TopRowBottomPane><ActivePane>2</ActivePane><ProtectObjects>False</ProtectObjects><ProtectScenarios>False</ProtectScenarios></WorksheetOptions>')
+    lines.append('</Worksheet>')
+    return ''.join(lines)
+
+
+def _build_sami_audit_workbook(sami_ref: str, csv_rows: list[dict], fieldnames: list[str]) -> bytes:
+    summary_fields = [
+        'SAMI Ref',
+        'Status',
+        'Open',
+        'Completed',
+        'Follow Up Count',
+        'Assigned At',
+        'Completed At',
+        'Assigned to Completed',
+        'Assigned Count',
+        'Completed Count',
+        'Total Events',
+    ]
+    summary_row = {field: '' for field in summary_fields}
+    summary_row['SAMI Ref'] = sami_ref
+    if csv_rows:
+        for field in summary_fields:
+            summary_row[field] = csv_rows[0].get(field, '')
+
+    preferred_timeline = [
+        'Event #', 'Event Time', 'Event Type', 'Action', 'Follow Up', 'Staff Email',
+        'Subject', 'Sender', 'Date', 'Time', 'msg_key', 'assigned_to', 'sami_id',
+    ]
+    timeline_fields = []
+    for field in preferred_timeline:
+        if field in fieldnames and field not in timeline_fields:
+            timeline_fields.append(field)
+    for field in fieldnames:
+        if field in summary_fields or field in timeline_fields:
+            continue
+        timeline_fields.append(field)
+
+    xml = (
+        '<?xml version="1.0"?>'
+        '<?mso-application progid="Excel.Sheet"?>'
+        '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" '
+        'xmlns:o="urn:schemas-microsoft-com:office:office" '
+        'xmlns:x="urn:schemas-microsoft-com:office:excel" '
+        'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" '
+        'xmlns:html="http://www.w3.org/TR/REC-html40">'
+        '<DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">'
+        f'<Title>{escape(sami_ref)} Audit Export</Title>'
+        '<Author>TRANSFER-BOT Dashboard</Author>'
+        '</DocumentProperties>'
+        '<ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel"><ProtectStructure>False</ProtectStructure><ProtectWindows>False</ProtectWindows></ExcelWorkbook>'
+        '<Styles>'
+        '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center"/><Borders/><Font ss:FontName="Calibri" ss:Size="11"/><Interior/><NumberFormat/><Protection/></Style>'
+        '<Style ss:ID="header"><Alignment ss:Vertical="Center" ss:Horizontal="Center" ss:WrapText="1"/><Font ss:Bold="1" ss:Color="#FFFFFF" ss:FontName="Calibri" ss:Size="11"/><Interior ss:Color="#16324F" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="summary_cell"><Alignment ss:Vertical="Center" ss:WrapText="1"/><Font ss:FontName="Calibri" ss:Size="11"/><Interior ss:Color="#F4F8FC" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="cell"><Alignment ss:Vertical="Center"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'
+        '<Style ss:ID="cell_center"><Alignment ss:Vertical="Center" ss:Horizontal="Center"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'
+        '<Style ss:ID="cell_wrap"><Alignment ss:Vertical="Center" ss:WrapText="1"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'
+        '<Style ss:ID="status_open"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#7F1D1D"/><Interior ss:Color="#FEE2E2" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="status_closed"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#14532D"/><Interior ss:Color="#DCFCE7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="status_completed_only"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#1D4ED8"/><Interior ss:Color="#DBEAFE" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="status_unknown"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#92400E"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="flag_yes"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#166534"/><Interior ss:Color="#DCFCE7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="flag_no"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Color="#475569"/><Interior ss:Color="#E2E8F0" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="event_assigned"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#1D4ED8"/><Interior ss:Color="#DBEAFE" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="event_completed"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#166534"/><Interior ss:Color="#DCFCE7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="event_follow_up"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#92400E"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="duration_long"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#5B21B6"/><Interior ss:Color="#EDE9FE" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="count_highlight"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#92400E"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/></Style>'
+        '</Styles>'
+        + _build_spreadsheetml_worksheet('SAMI Audit Summary', summary_fields, [summary_row], 'summary')
+        + _build_spreadsheetml_worksheet('Event Timeline', timeline_fields, csv_rows, 'timeline')
+        + '</Workbook>'
+    )
+    return xml.encode('utf-8')
 
 
 def _normalize_email(raw) -> tuple[str | None, str | None]:
@@ -1028,25 +1192,21 @@ async def active_export(date_start: str | None = None, date_end: str | None = No
 
 @app.get("/api/sami-export")
 async def sami_export(sami_ref: str):
-    """Download an audit CSV for all rows that match a SAMI reference code."""
+    """Download an Excel audit workbook for all rows that match a SAMI reference code."""
     target = _normalize_sami_lookup(sami_ref)
     if not target:
         raise HTTPException(status_code=400, detail="sami_ref parameter is required")
 
     rows, _ = load_csv(_resolve_stats_csv_path())
     csv_rows, fieldnames = _build_sami_audit_csv(rows or [], target)
-
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
-    writer.writeheader()
-    writer.writerows(csv_rows)
+    workbook = _build_sami_audit_workbook(target, csv_rows, fieldnames)
 
     safe_ref = re.sub(r"[^a-zA-Z0-9_\-]+", "_", target)
-    filename = f"{safe_ref}_audit.csv"
+    filename = f"{safe_ref}_audit.xls"
 
     return StreamingResponse(
-        iter([buf.getvalue()]),
-        media_type="text/csv",
+        iter([workbook]),
+        media_type="application/vnd.ms-excel",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -1633,3 +1793,4 @@ if __name__ == "__main__":
     # Allow running as `python -m dashboard.backend.server` or directly
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
     main()
+

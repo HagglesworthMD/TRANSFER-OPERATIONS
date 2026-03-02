@@ -80,6 +80,11 @@
                 <button class="date-preset" data-preset="30d">30 Days</button>
                 <button class="date-preset" data-preset="all">All</button>
             </div>
+            <div class="toolbar-sami-search">
+                <label class="date-label" for="sami-search-input">Search SAMI-ID</label>
+                <input type="text" id="sami-search-input" class="sami-search-input" placeholder="SAMI-XXXXXX" />
+                <button id="sami-export-btn" class="clear-filter-btn" type="button">Export Excel</button>
+            </div>
             <span class="range-label" id="range-label"></span>
         </section>
 
@@ -178,69 +183,6 @@
             </div>
         </section>
 
-        <!-- Hourly Detail Table -->
-        <section class="hourly-detail-row" id="hourly-detail-section">
-            <div class="card panel-full">
-                <h2 class="panel-title">
-                    Hourly Detail <span class="badge" id="hourly-detail-count">0</span>
-                    <span id="hourly-filter-label" style="display:none">
-                        â€” Showing <strong id="hourly-filter-hour"></strong>
-                    </span>
-                </h2>
-                <div class="feed-controls">
-                    <label>Source:</label>
-                    <select id="hourly-source-filter" class="staff-filter-select">
-                        <option value="">All Sources</option>
-                    </select>
-                    <button id="hourly-clear-filter" class="clear-filter-btn" style="display:none">Clear</button>
-                </div>
-                <div class="feed-wrap">
-                    <table class="feed-table" id="hourly-detail-table">
-                        <thead><tr>
-                            <th class="sortable" data-sort="time">Time</th>
-                            <th class="sortable" data-sort="source">Source</th>
-                            <th class="sortable" data-sort="type">Type</th>
-                            <th class="sortable" data-sort="subject">Subject</th>
-                            <th class="sortable" data-sort="staff">Staff</th>
-                            <th class="sortable" data-sort="risk">Risk</th>
-                        </tr></thead>
-                        <tbody id="hourly-detail-tbody"></tbody>
-                    </table>
-                </div>
-            </div>
-        </section>
-
-        <!-- Requestor Row -->
-        <section class="mid-row">
-            <div class="card panel-large">
-                <h2 class="panel-title">Requestor Breakdown (Senders)</h2>
-                <div class="chart-container chart-wide">
-                    <canvas id="chart-requestor"></canvas>
-                </div>
-            </div>
-            <div class="card panel-small">
-                <h2 class="panel-title" id="insight-panel-title">Next Up: &mdash;</h2>
-                <div class="insights-grid">
-                    <div class="insight-item">
-                        <div class="insight-label">Active Tickets</div>
-                        <div class="insight-value" id="insight-active">&mdash;</div>
-                    </div>
-                    <div class="insight-item">
-                        <div class="insight-label">Assigned</div>
-                        <div class="insight-value" id="insight-assigned">&mdash;</div>
-                    </div>
-                    <div class="insight-item">
-                        <div class="insight-label">Completed</div>
-                        <div class="insight-value" id="insight-completed">&mdash;</div>
-                    </div>
-                    <div class="insight-item">
-                        <div class="insight-label">Median Response</div>
-                        <div class="insight-value" id="insight-median">&mdash;</div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
         <!-- Bottom Row: Activity Feed + Staff Panel -->
         <section class="bottom-row">
             <div class="card panel-large">
@@ -252,8 +194,6 @@
                     </select>
                     <button id="clear-filter" class="clear-filter-btn" style="display: none;">Clear</button>
                     <button id="show-active-btn" class="clear-filter-btn" type="button">Show Active</button>
-                    <input type="text" id="sami-search-input" class="sami-search-input" placeholder="SAMI-XXXXXX" />
-                    <button id="sami-export-btn" class="clear-filter-btn" type="button">SAMI CSV</button>
                 </div>
                 <div class="feed-wrap" id="activity-feed-wrap">
                     <table class="feed-table" id="activity-feed-table">
@@ -396,6 +336,69 @@
                 </details>
             </div>
         </section>
+        <!-- Requestor Row -->
+        <section class="mid-row">
+            <div class="card panel-large">
+                <h2 class="panel-title">Requestor Breakdown (Senders)</h2>
+                <div class="chart-container chart-wide">
+                    <canvas id="chart-requestor"></canvas>
+                </div>
+            </div>
+            <div class="card panel-small">
+                <h2 class="panel-title" id="insight-panel-title">Next Up: &mdash;</h2>
+                <div class="insights-grid">
+                    <div class="insight-item">
+                        <div class="insight-label">Active Tickets</div>
+                        <div class="insight-value" id="insight-active">&mdash;</div>
+                    </div>
+                    <div class="insight-item">
+                        <div class="insight-label">Assigned</div>
+                        <div class="insight-value" id="insight-assigned">&mdash;</div>
+                    </div>
+                    <div class="insight-item">
+                        <div class="insight-label">Completed</div>
+                        <div class="insight-value" id="insight-completed">&mdash;</div>
+                    </div>
+                    <div class="insight-item">
+                        <div class="insight-label">Median Response</div>
+                        <div class="insight-value" id="insight-median">&mdash;</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Hourly Detail Table -->
+        <section class="hourly-detail-row" id="hourly-detail-section">
+            <div class="card panel-full">
+                <h2 class="panel-title">
+                    Hourly Detail <span class="badge" id="hourly-detail-count">0</span>
+                    <span id="hourly-filter-label" style="display:none">
+                        â€” Showing <strong id="hourly-filter-hour"></strong>
+                    </span>
+                </h2>
+                <div class="feed-controls">
+                    <label>Source:</label>
+                    <select id="hourly-source-filter" class="staff-filter-select">
+                        <option value="">All Sources</option>
+                    </select>
+                    <button id="hourly-clear-filter" class="clear-filter-btn" style="display:none">Clear</button>
+                </div>
+                <div class="feed-wrap">
+                    <table class="feed-table" id="hourly-detail-table">
+                        <thead><tr>
+                            <th class="sortable" data-sort="time">Time</th>
+                            <th class="sortable" data-sort="source">Source</th>
+                            <th class="sortable" data-sort="type">Type</th>
+                            <th class="sortable" data-sort="subject">Subject</th>
+                            <th class="sortable" data-sort="staff">Staff</th>
+                            <th class="sortable" data-sort="risk">Risk</th>
+                        </tr></thead>
+                        <tbody id="hourly-detail-tbody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
     </main>
 
 
@@ -489,4 +492,6 @@
     <script src="/js/app.js"></script>
 </body>
 </html>
+
+
 

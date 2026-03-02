@@ -505,11 +505,28 @@ body {
     color: var(--accent-blue);
 }
 
+.toolbar-sami-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.toolbar-sami-search .sami-search-input {
+    width: 180px;
+}
+
 .range-label {
     font-size: 0.86rem;
     color: var(--text-muted);
     font-family: var(--font-mono);
-    margin-left: auto;
+}
+
+@media (max-width: 1100px) {
+    .toolbar-sami-search {
+        margin-left: 0;
+        flex-wrap: wrap;
+    }
 }
 
 /* ── Dashboard Grid ── */
@@ -1842,4 +1859,5 @@ body {
     background: rgba(244, 67, 54, 0.1);
     border-radius: 4px;
 }
+
 
