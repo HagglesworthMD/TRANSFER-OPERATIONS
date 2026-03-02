@@ -675,6 +675,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
 
     assigned_keys_in_range: set[str] = set()
     completed_keys_in_range: set[str] = set()
+    latest_assignment_events_in_range: set[tuple] = set()
     for e in filtered:
         if not _is_canonical_kpi_event(e):
             continue
@@ -684,6 +685,8 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
             assigned_keys_in_range.add(key)
         elif event_type == "COMPLETED":
             completed_keys_in_range.add(key)
+        if event_type in ("REASSIGN_MANUAL", "JIRA_FOLLOWUP_ASSIGNED"):
+            latest_assignment_events_in_range.add(_event_key(e))
 
     processed_keys: set[str] = set()
     processed_in_range_keys: set[str] = set()
@@ -1042,6 +1045,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     # Per-range dedupe: a SAMI contributes at most once per metric in filtered range.
     assigned_keys_in_range: set[str] = set()
     completed_keys_in_range: set[str] = set()
+    latest_assignment_events_in_range: set[tuple] = set()
     for e in filtered:
         if not _is_canonical_kpi_event(e):
             continue
@@ -1051,6 +1055,8 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             assigned_keys_in_range.add(key)
         elif event_type == "COMPLETED":
             completed_keys_in_range.add(key)
+        if event_type in ("REASSIGN_MANUAL", "JIRA_FOLLOWUP_ASSIGNED"):
+            latest_assignment_events_in_range.add(_event_key(e))
 
     for key, job in jobs.items():
         assigned_event = job.get("assigned_event")
@@ -1069,7 +1075,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             staff_assigned[assigned_email] += 1
         if key in assigned_keys_in_range:
             staff_assigned_in_range[assigned_email] += 1
-        if job.get("is_jira_followup") and initial_email and initial_email != assigned_email and _is_staff(initial_email):
+        if job.get("is_jira_followup") and initial_email and initial_email != assigned_email and _is_staff(initial_email) and _event_key(assigned_event) in latest_assignment_events_in_range:
             staff_jira_followup_reassigned[initial_email] += 1
         if key in completed_keys_in_range and job.get("has_completed"):
             staff_completed[assigned_email] += 1

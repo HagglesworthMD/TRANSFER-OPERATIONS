@@ -353,7 +353,7 @@ class DashboardSamiGroupingTests(unittest.TestCase):
         )
 
         by_email = self._staff_map(payload)
-        self.assertNotIn("alice.smith@example.com", by_email)
+        self.assertEqual(by_email["alice.smith@example.com"]["jira_followup_reassigned"], 1)
         self.assertEqual(by_email["bob.jones@example.com"]["assigned"], 1)
         self.assertEqual(by_email["bob.jones@example.com"]["assigned_in_range"], 1)
         self.assertEqual(by_email["bob.jones@example.com"]["completed"], 1)
@@ -453,6 +453,59 @@ class DashboardSamiGroupingTests(unittest.TestCase):
         self.assertEqual(by_email["bob.jones@example.com"]["jira_followup_reassigned"], 0)
 
 
+    def test_jira_followup_reassignment_respects_selected_date_range(self):
+        rows = [
+            self._row(
+                date="2026-02-18",
+                time="09:00:00",
+                subject="Jira follow-up assignment",
+                event_type="JIRA_FOLLOWUP_ASSIGNED",
+                action="JIRA_FOLLOWUP",
+                assigned_to="alice.smith@example.com",
+                sender="jira@example.com",
+                msg_key="jira-range-1",
+                sami_id="SAMI-JIRARANGE1",
+                assigned_ts="2026-02-18T09:00:00",
+            ),
+            self._row(
+                date="2026-02-18",
+                time="09:30:00",
+                subject="Jira follow-up reassigned",
+                event_type="JIRA_FOLLOWUP_ASSIGNED",
+                assigned_to="bob.jones@example.com",
+                sender="dashboard_admin",
+                msg_key="jira-range-2",
+                sami_id="SAMI-JIRARANGE1",
+                action="JIRA_FOLLOWUP",
+                assigned_ts="2026-02-18T09:30:00",
+            ),
+        ]
+
+        same_day = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com", "bob.jones@example.com"],
+            hib_state=None,
+            date_start="2026-02-18",
+            date_end="2026-02-18",
+            reconciled_set=set(),
+        )
+        next_day = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com", "bob.jones@example.com"],
+            hib_state=None,
+            date_start="2026-02-19",
+            date_end="2026-02-19",
+            reconciled_set=set(),
+        )
+
+        self.assertEqual(self._staff_map(same_day)["alice.smith@example.com"]["jira_followup_reassigned"], 1)
+        self.assertNotIn("alice.smith@example.com", self._staff_map(next_day))
+
+
     def test_activity_feed_can_filter_jira_followup_reassignments_for_original_owner(self):
         rows = [
             self._row(
@@ -494,7 +547,7 @@ class DashboardSamiGroupingTests(unittest.TestCase):
                 date=self.DAY,
                 time="10:15:00",
                 subject="Plain reassigned",
-                event_type="JIRA_FOLLOWUP_ASSIGNED",
+                event_type="REASSIGN_MANUAL",
                 assigned_to="bob.jones@example.com",
                 sender="dashboard_admin",
                 msg_key="plain-2",
