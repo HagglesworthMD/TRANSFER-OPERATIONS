@@ -47,6 +47,17 @@ const KPITable = {
                     if (staffName && typeof ActivityFeed !== 'undefined') {
                         ActivityFeed._openActiveModal(staffName);
                     }
+                    return;
+                }
+
+                const jiraLink = e.target.closest('.cell-jira-reassigned-link');
+                if (jiraLink) {
+                    e.preventDefault();
+                    const staffName = jiraLink.dataset.staff;
+                    if (staffName && typeof ActivityFeed !== 'undefined' && typeof ActivityFeed.focusJiraFollowupReassigned === 'function') {
+                        ActivityFeed.focusJiraFollowupReassigned(staffName);
+                    }
+                    return;
                 }
             });
         }
@@ -101,6 +112,7 @@ const KPITable = {
                 <td class="cell-name cell-name-link" data-name="${this._esc(s.name)}">${this._esc(s.name)}</td>
                 <td>${s.assigned_in_range}</td>
                 <td>${s.completed}</td>
+                <td>${(s.jira_followup_reassigned || 0) > 0 ? `<a class="cell-jira-reassigned-link" data-staff="${this._esc(s.name)}" href="#">${s.jira_followup_reassigned}</a>` : (s.jira_followup_reassigned || 0)}</td>
                 <td>${s.active > 0 ? `<a class="cell-active-link" data-staff="${this._esc(s.name)}" href="#">${s.active}</a>` : s.active}</td>
                 <td>${s.median_human || '—'}${lcIcon}</td>
                 <td class="${p90Class}">${s.p90_human || '—'}${lcIcon}</td>
@@ -110,16 +122,18 @@ const KPITable = {
         // Totals footer row
         const tfoot = document.getElementById('kpi-tfoot');
         if (tfoot) {
-            let totalAssigned = 0, totalCompleted = 0, totalActive = 0;
+            let totalAssigned = 0, totalCompleted = 0, totalJiraFollowupReassigned = 0, totalActive = 0;
             for (const s of this._data) {
                 totalAssigned += s.assigned_in_range;
                 totalCompleted += s.completed;
+                totalJiraFollowupReassigned += (s.jira_followup_reassigned || 0);
                 totalActive += s.active;
             }
             tfoot.innerHTML = `<tr class="kpi-totals-row">
                 <td>Total</td>
                 <td>${totalAssigned}</td>
                 <td>${totalCompleted}</td>
+                <td>${totalJiraFollowupReassigned}</td>
                 <td>${totalActive}</td>
                 <td></td>
                 <td></td>

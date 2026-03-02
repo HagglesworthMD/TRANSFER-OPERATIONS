@@ -758,13 +758,15 @@ body {
     text-decoration: underline;
 }
 
-.cell-active-link {
+.cell-active-link,
+.cell-jira-reassigned-link {
     color: inherit;
     text-decoration: none;
     cursor: pointer;
     border-bottom: 1px dashed var(--text-muted);
 }
-.cell-active-link:hover {
+.cell-active-link:hover,
+.cell-jira-reassigned-link:hover {
     color: var(--accent);
     border-bottom-color: var(--accent);
 }

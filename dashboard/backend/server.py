@@ -462,7 +462,7 @@ def _spreadsheetml_style(kind: str, field: str, value) -> str:
         if field == 'Assigned to Completed' and text.endswith('hrs'):
             return 'duration_long'
         return 'summary_cell'
-    if field == 'Event Type':
+    if field in ('Event Type', 'Type'):
         if upper == 'ASSIGNED':
             return 'event_assigned'
         if upper == 'COMPLETED':
@@ -472,6 +472,8 @@ def _spreadsheetml_style(kind: str, field: str, value) -> str:
         return 'cell_center'
     if field == 'Follow Up':
         return 'flag_yes' if text == 'yes' else 'flag_no'
+    if field == 'Duration' and text.endswith('hrs'):
+        return 'duration_long'
     if field in ('Subject', 'Note', 'Body'):
         return 'cell_wrap'
     if field in ('Event #', 'Assigned Count', 'Completed Count', 'Follow Up Count', 'Total Events'):
@@ -589,6 +591,65 @@ def _build_sami_audit_workbook(sami_ref: str, csv_rows: list[dict], fieldnames: 
         '</Styles>'
         + _build_spreadsheetml_worksheet('SAMI Audit Summary', summary_fields, [summary_row], 'summary')
         + _build_spreadsheetml_worksheet('Event Timeline', timeline_fields, csv_rows, 'timeline')
+        + '</Workbook>'
+    )
+    return xml.encode('utf-8')
+
+
+def _build_staff_export_workbook(staff_name: str, events: list[dict], date_start: str, date_end: str) -> bytes:
+    summary_fields = [
+        'Staff',
+        'Date Start',
+        'Date End',
+        'Assigned',
+        'Completed',
+        'Total Events',
+    ]
+    assigned = sum(1 for row in events if (row.get('Type') or '').upper() == 'ASSIGNED')
+    completed = sum(1 for row in events if (row.get('Type') or '').upper() == 'COMPLETED')
+    summary_row = {
+        'Staff': staff_name,
+        'Date Start': date_start,
+        'Date End': date_end,
+        'Assigned': assigned,
+        'Completed': completed,
+        'Total Events': len(events),
+    }
+    timeline_fields = ['Date', 'Time', 'Type', 'Subject', 'Sender', 'Source', 'Risk Level', 'Domain', 'Duration']
+    xml = (
+        '<?xml version="1.0"?>'
+        '<?mso-application progid="Excel.Sheet"?>'
+        '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" '
+        'xmlns:o="urn:schemas-microsoft-com:office:office" '
+        'xmlns:x="urn:schemas-microsoft-com:office:excel" '
+        'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" '
+        'xmlns:html="http://www.w3.org/TR/REC-html40">'
+        '<DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">'
+        f'<Title>{escape(staff_name)} Staff Export</Title>'
+        '<Author>TRANSFER-BOT Dashboard</Author>'
+        '</DocumentProperties>'
+        '<ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel"><ProtectStructure>False</ProtectStructure><ProtectWindows>False</ProtectWindows></ExcelWorkbook>'
+        '<Styles>'
+        '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center"/><Borders/><Font ss:FontName="Calibri" ss:Size="11"/><Interior/><NumberFormat/><Protection/></Style>'
+        '<Style ss:ID="header"><Alignment ss:Vertical="Center" ss:Horizontal="Center" ss:WrapText="1"/><Font ss:Bold="1" ss:Color="#FFFFFF" ss:FontName="Calibri" ss:Size="11"/><Interior ss:Color="#16324F" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="summary_cell"><Alignment ss:Vertical="Center" ss:WrapText="1"/><Font ss:FontName="Calibri" ss:Size="11"/><Interior ss:Color="#F4F8FC" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="cell"><Alignment ss:Vertical="Center"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'
+        '<Style ss:ID="cell_center"><Alignment ss:Vertical="Center" ss:Horizontal="Center"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'
+        '<Style ss:ID="cell_wrap"><Alignment ss:Vertical="Center" ss:WrapText="1"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'
+        '<Style ss:ID="status_open"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#7F1D1D"/><Interior ss:Color="#FEE2E2" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="status_closed"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#14532D"/><Interior ss:Color="#DCFCE7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="status_completed_only"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#1D4ED8"/><Interior ss:Color="#DBEAFE" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="status_unknown"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#92400E"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="flag_yes"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#166534"/><Interior ss:Color="#DCFCE7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="flag_no"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Color="#475569"/><Interior ss:Color="#E2E8F0" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="event_assigned"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#1D4ED8"/><Interior ss:Color="#DBEAFE" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="event_completed"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#166534"/><Interior ss:Color="#DCFCE7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="event_follow_up"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#92400E"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="duration_long"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#5B21B6"/><Interior ss:Color="#EDE9FE" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="count_highlight"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#92400E"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/></Style>'
+        '</Styles>'
+        + _build_spreadsheetml_worksheet('Staff Summary', summary_fields, [summary_row], 'summary')
+        + _build_spreadsheetml_worksheet('Staff Timeline', timeline_fields, events, 'timeline')
         + '</Workbook>'
     )
     return xml.encode('utf-8')
@@ -1037,13 +1098,17 @@ async def me():
 
 @app.get("/api/dashboard")
 async def dashboard_endpoint(date_start: str | None = None, date_end: str | None = None,
-                             staff: str | None = None):
+                             staff: str | None = None,
+                             activity_mode: str | None = None,
+                             activity_staff: str | None = None):
     """Unified dashboard data — single call for all read-only data.
 
     Query params:
         date_start: YYYY-MM-DD (optional, defaults to today)
         date_end:   YYYY-MM-DD (optional, defaults to today)
         staff:      display name to filter activity feed (optional)
+        activity_mode: special recent-activity mode (optional)
+        activity_staff: display name used by special recent-activity mode (optional)
     """
     rows, csv_err = load_csv(_resolve_stats_csv_path())
     roster, _ = load_json(config.ROSTER_STATE_JSON)
@@ -1061,7 +1126,8 @@ async def dashboard_endpoint(date_start: str | None = None, date_end: str | None
     rec_set = load_reconciled_set()
     payload = compute_dashboard(rows, roster, settings, staff_list, hib_state,
                                 date_start=date_start, date_end=date_end,
-                                staff_filter=staff, reconciled_set=rec_set)
+                                staff_filter=staff, reconciled_set=rec_set,
+                                activity_mode=activity_mode, activity_staff=activity_staff)
     warnings: list[str] = []
     if csv_err:
         warnings.append(csv_err)
@@ -1072,7 +1138,7 @@ async def dashboard_endpoint(date_start: str | None = None, date_end: str | None
 
 @app.get("/api/staff-export")
 async def staff_export(name: str, date_start: str | None = None, date_end: str | None = None):
-    """Download a CSV of all events for a given staff member in the date range."""
+    """Download a formatted Excel workbook of all events for a given staff member in the date range."""
     if not name or not name.strip():
         raise HTTPException(status_code=400, detail="name parameter is required")
 
@@ -1086,21 +1152,14 @@ async def staff_export(name: str, date_start: str | None = None, date_end: str |
     de = date_end or today
 
     events = export_staff_events(rows, name, ds, de)
+    workbook = _build_staff_export_workbook(name, events, ds, de)
 
-    # Build CSV in memory
-    buf = io.StringIO()
-    fieldnames = ["Date", "Time", "Type", "Subject", "Sender", "Source", "Risk Level", "Domain", "Duration"]
-    writer = csv.DictWriter(buf, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(events)
-
-    # Build filename: replace spaces with underscores
-    safe_name = name.strip().replace(" ", "_")
-    filename = f"{safe_name}_{ds}.csv"
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-]+", "_", name.strip())
+    filename = f"{safe_name}_{ds}_{de}.xls"
 
     return StreamingResponse(
-        iter([buf.getvalue()]),
-        media_type="text/csv",
+        iter([workbook]),
+        media_type="application/vnd.ms-excel",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

@@ -9,6 +9,8 @@ const DashboardAPI = {
             if (params.dateStart) qs.set('date_start', params.dateStart);
             if (params.dateEnd) qs.set('date_end', params.dateEnd);
             if (params.staff) qs.set('staff', params.staff);
+            if (params.activityMode) qs.set('activity_mode', params.activityMode);
+            if (params.activityStaff) qs.set('activity_staff', params.activityStaff);
         }
         const s = qs.toString();
         return s ? `?${s}` : '';
@@ -244,5 +246,23 @@ const DashboardAPI = {
             method: 'POST',
         });
         return res.json();
+    },
+
+    async reassign(samiId, mode, targetStaffEmail, reason, note) {
+        const res = await fetch(`${this.base}/api/reassign`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                sami_id: samiId,
+                mode,
+                target_staff_email: targetStaffEmail || '',
+                reason,
+                note: note || '',
+                requested_by: 'dashboard_admin',
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to queue reassignment');
+        return data;
     },
 };

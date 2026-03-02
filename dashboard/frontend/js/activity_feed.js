@@ -8,6 +8,7 @@ const ActivityFeed = {
     _sortDir: 'desc',
     _activeRows: [],
     _activeParams: null,
+    _specialFilter: null,
 
     init() {
         const filterSelect = document.getElementById('staff-filter');
@@ -16,6 +17,7 @@ const ActivityFeed = {
         if (filterSelect) {
             filterSelect.addEventListener('change', (e) => {
                 this._currentFilter = e.target.value;
+                this._specialFilter = null;
                 clearBtn.style.display = this._currentFilter ? 'inline-block' : 'none';
                 // Re-fetch from backend with staff filter so we get all their events
                 App.refresh();
@@ -25,6 +27,7 @@ const ActivityFeed = {
         if (clearBtn) {
             clearBtn.addEventListener('click', () => {
                 this._currentFilter = '';
+                this._specialFilter = null;
                 filterSelect.value = '';
                 clearBtn.style.display = 'none';
                 App.refresh();
@@ -128,6 +131,55 @@ const ActivityFeed = {
         return null;
     },
 
+
+    getQueryParams() {
+        if (!this._specialFilter) return null;
+        return {
+            activityMode: this._specialFilter.mode,
+            activityStaff: this._specialFilter.staff,
+        };
+    },
+
+    async focusJiraFollowupReassigned(staffName) {
+        if (!staffName) return;
+        const filterSelect = document.getElementById('staff-filter');
+        const clearBtn = document.getElementById('clear-filter');
+        if (filterSelect) filterSelect.value = '';
+        this._currentFilter = '';
+        this._specialFilter = { mode: 'jira_followup_reassigned', staff: staffName };
+        if (clearBtn) clearBtn.style.display = 'inline-block';
+        await this._openJiraFollowupReassignedModal(staffName);
+    },
+
+    async _openJiraFollowupReassignedModal(staffName) {
+        const modal = document.getElementById('active-modal');
+        const meta = document.getElementById('active-modal-meta');
+        const tbody = document.getElementById('active-modal-tbody');
+        const titleEl = document.getElementById('active-modal-title');
+        const downloadBtn = document.getElementById('active-download-btn');
+        if (!modal || !meta || !tbody) return;
+
+        modal.classList.remove('hidden');
+        meta.textContent = 'Loading Jira follow-up reassignments...';
+        tbody.innerHTML = '<tr><td colspan="9">Loading...</td></tr>';
+        if (titleEl) titleEl.textContent = `Jira Follow-up Reassigned - ${staffName}`;
+        if (downloadBtn) downloadBtn.style.display = 'none';
+
+        try {
+            const params = this._currentDateParams() || {};
+            delete params.staff;
+            params.activityMode = 'jira_followup_reassigned';
+            params.activityStaff = staffName;
+            const data = await DashboardAPI.getDashboard(params);
+            const rows = Array.isArray(data.activity_feed) ? data.activity_feed : [];
+            this._renderJiraReassignedRows(rows);
+            meta.textContent = `${staffName} - ${rows.length} Jira follow-up reassignments (${data.date_start || ''} to ${data.date_end || ''})`;
+        } catch (err) {
+            meta.textContent = `Failed to load Jira follow-up reassignments: ${err.message}`;
+            tbody.innerHTML = '<tr><td colspan="9">Failed to load Jira follow-up reassignments.</td></tr>';
+        }
+    },
+
     async _openActiveModal(staffName) {
         const modal = document.getElementById('active-modal');
         const meta = document.getElementById('active-modal-meta');
@@ -158,9 +210,43 @@ const ActivityFeed = {
 
     _closeActiveModal() {
         const modal = document.getElementById('active-modal');
+        const downloadBtn = document.getElementById('active-download-btn');
+        if (downloadBtn) downloadBtn.style.display = '';
         if (modal) {
             modal.classList.add('hidden');
         }
+    },
+
+    _renderJiraReassignedRows(rows) {
+        const tbody = document.getElementById('active-modal-tbody');
+        if (!tbody) return;
+
+        if (!rows || rows.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="9">No Jira follow-up reassignments found for this date range.</td></tr>';
+            return;
+        }
+
+        const htmlRows = rows.map((item) => {
+            const sami = (item.sami_ref || '').trim();
+            const samiHtml = sami
+                ? `<span class="ref-badge" data-ref="${this._esc(sami)}" title="Click to copy ${this._esc(sami)}">${this._esc(sami)}</span>`
+                : '';
+            const subjectHtml = this._linkifyRefs(this._truncate(item.subject || '', 90));
+            return `<tr>
+                <td>${this._esc(item.date)}</td>
+                <td>${this._esc(item.time)}</td>
+                <td>${samiHtml}</td>
+                <td>${this._esc(item.assigned_to)}</td>
+                <td>${this._esc(item.sender || '')}</td>
+                <td>${this._esc(item.domain || item.action || '')}</td>
+                <td>${this._esc(item.risk_level || '')}</td>
+                <td title="${this._esc(item.subject || '')}">${subjectHtml}</td>
+                <td></td>
+            </tr>`;
+        });
+
+        tbody.innerHTML = htmlRows.join('');
+        this._wireRefCopy(tbody);
     },
 
     _renderActiveRows(rows) {

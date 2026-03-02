@@ -585,7 +585,9 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
                       date_start: str | None = None,
                       date_end: str | None = None,
                       staff_filter: str | None = None,
-                      reconciled_set: set[str] | None = None) -> dict[str, Any]:
+                      reconciled_set: set[str] | None = None,
+                      activity_mode: str | None = None,
+                      activity_staff: str | None = None) -> dict[str, Any]:
     """Compute the full unified dashboard payload.
 
     date_start/date_end: optional YYYY-MM-DD strings to filter events.
@@ -654,6 +656,8 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
                 "assigned_ts": None,
                 "completed_ts": None,
                 "assigned_event": None,
+                "initial_assigned_event": None,
+                "is_jira_followup": False,
             },
         )
 
@@ -859,7 +863,9 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     # ── Recent activity feed (last 50 in range) ──
     activity_feed = _build_activity_feed(filtered, events, limit=50,
                                          staff_filter=staff_filter,
-                                         canonical_durations=_canonical_sami_durations)
+                                         canonical_durations=_canonical_sami_durations,
+                                         activity_mode=activity_mode,
+                                         activity_staff=activity_staff)
 
     return {
         "summary": summary,
@@ -952,6 +958,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
     # Group by staff email (canonical per-SAMI job metrics)
     staff_assigned: dict[str, int] = defaultdict(int)
     staff_assigned_in_range: dict[str, int] = defaultdict(int)
+    staff_jira_followup_reassigned: dict[str, int] = defaultdict(int)
     staff_completed: dict[str, int] = defaultdict(int)
     staff_active: dict[str, int] = defaultdict(int)
     staff_durations: dict[str, list[float]] = defaultdict(list)
@@ -984,7 +991,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
         event_type = (e.get("event_type") or "").strip().upper()
         if event_type == "CONFIG_CHANGED":
             return False
-        if event_type not in ("ASSIGNED", "COMPLETED", "REASSIGN_MANUAL"):
+        if event_type not in ("ASSIGNED", "COMPLETED", "REASSIGN_MANUAL", "JIRA_FOLLOWUP_ASSIGNED"):
             return False
         if _is_reconciliation_only(e):
             return False
@@ -1014,9 +1021,15 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             },
         )
 
-        if event_type in ("ASSIGNED", "REASSIGN_MANUAL"):
+        action = (e.get("action") or e.get("Action") or "").strip().upper()
+        if event_type == "JIRA_FOLLOWUP_ASSIGNED" or action == "JIRA_FOLLOWUP":
+            job["is_jira_followup"] = True
+
+        if event_type in ("ASSIGNED", "REASSIGN_MANUAL", "JIRA_FOLLOWUP_ASSIGNED"):
             job["has_assigned"] = True
             assigned_ts = _resolve_received_ts(e, "assigned")
+            if event_type in ("ASSIGNED", "JIRA_FOLLOWUP_ASSIGNED") and job.get("initial_assigned_event") is None:
+                job["initial_assigned_event"] = e
             if assigned_ts and (job["assigned_ts"] is None or assigned_ts >= job["assigned_ts"]):
                 job["assigned_ts"] = assigned_ts
                 job["assigned_event"] = e
@@ -1049,10 +1062,15 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             continue
         canonical_staff_emails.add(assigned_email)
 
+        initial_assigned_event = job.get("initial_assigned_event")
+        initial_email = (initial_assigned_event.get("assigned_to") or "").strip().lower() if initial_assigned_event else assigned_email
+
         if job.get("has_assigned"):
             staff_assigned[assigned_email] += 1
         if key in assigned_keys_in_range:
             staff_assigned_in_range[assigned_email] += 1
+        if job.get("is_jira_followup") and initial_email and initial_email != assigned_email and _is_staff(initial_email):
+            staff_jira_followup_reassigned[initial_email] += 1
         if key in completed_keys_in_range and job.get("has_completed"):
             staff_completed[assigned_email] += 1
         if job.get("has_assigned") and not job.get("has_completed"):
@@ -1074,7 +1092,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             if count > 0 and email in canonical_staff_emails
         }
 
-    all_emails = set(staff_assigned) | set(staff_completed) | set(reconciled_per_staff or {})
+    all_emails = set(staff_assigned) | set(staff_completed) | set(staff_jira_followup_reassigned) | set(reconciled_per_staff or {})
     if external_active_by_staff:
         all_emails |= set(canonical_active_by_staff)
     else:
@@ -1098,6 +1116,7 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             "name": _staff_display_name(email),
             "assigned": assigned,
             "assigned_in_range": staff_assigned_in_range.get(email, 0),
+            "jira_followup_reassigned": staff_jira_followup_reassigned.get(email, 0),
             "completed": completed,
             "active": active,
             "median_min": median_min,
@@ -1214,7 +1233,9 @@ def _compute_distribution(events: list[dict], field: str,
 
 def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: int = 50,
                          staff_filter: str | None = None, *,
-                         canonical_durations: dict[str, float] | None = None) -> list[dict]:
+                         canonical_durations: dict[str, float] | None = None,
+                         activity_mode: str | None = None,
+                         activity_staff: str | None = None) -> list[dict]:
     """Recent activity — most recent first."""
     # Build lookup: msg_key → staff email from ASSIGNED events (all events, not just filtered)
     # so COMPLETED rows can show who originally handled the ticket.
@@ -1328,10 +1349,48 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
 
     # ------------------------------------------------------------------
 
+    jira_reassigned_keys: set[str] = set()
+    if activity_mode == "jira_followup_reassigned" and activity_staff:
+        target_staff = activity_staff.strip().lower()
+        jobs: dict[str, dict[str, Any]] = {}
+        for e in all_events:
+            key = _resolve_sami_group_key(e)
+            if not key:
+                continue
+            event_type = (e.get("event_type") or "").strip().upper()
+            action = (e.get("action") or e.get("Action") or "").strip().upper()
+            if event_type == "CONFIG_CHANGED":
+                continue
+            if event_type not in ("ASSIGNED", "COMPLETED", "REASSIGN_MANUAL", "JIRA_FOLLOWUP_ASSIGNED"):
+                continue
+            job = jobs.setdefault(key, {"initial_email": None, "latest_email": None, "is_jira_followup": False, "latest_event_type": None})
+            if event_type == "JIRA_FOLLOWUP_ASSIGNED" or action == "JIRA_FOLLOWUP":
+                job["is_jira_followup"] = True
+            if event_type in ("ASSIGNED", "JIRA_FOLLOWUP_ASSIGNED") and job.get("initial_email") is None:
+                email = (e.get("assigned_to") or "").strip().lower()
+                if _is_staff(email):
+                    job["initial_email"] = email
+            if event_type in ("ASSIGNED", "REASSIGN_MANUAL", "JIRA_FOLLOWUP_ASSIGNED"):
+                email = (e.get("assigned_to") or "").strip().lower()
+                if _is_staff(email):
+                    job["latest_email"] = email
+                    job["latest_event_type"] = event_type
+        jira_reassigned_keys = {
+            key for key, job in jobs.items()
+            if job.get("is_jira_followup")
+            and job.get("initial_email")
+            and (
+                job.get("initial_email") == target_staff
+                or _staff_display_name(job.get("initial_email") or "").lower() == target_staff
+            )
+            and job.get("latest_email")
+            and job.get("latest_email") != job.get("initial_email")
+        }
+
     # Only include events with a timestamp and a meaningful event type
     feed_events = [
         e for e in filtered
-        if e["event_ts"] and e["event_type"] in ("ASSIGNED", "COMPLETED")
+        if e["event_ts"] and e["event_type"] in (("REASSIGN_MANUAL", "JIRA_FOLLOWUP_ASSIGNED") if activity_mode == "jira_followup_reassigned" else ("ASSIGNED", "COMPLETED"))
     ]
     feed_events.sort(key=lambda e: e["event_ts"], reverse=True)
 
@@ -1352,7 +1411,20 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
 
     # When a staff filter is active, keep only that person's events before
     # applying the limit so the user sees all their recent jobs.
-    if staff_filter:
+    if activity_mode == "jira_followup_reassigned" and activity_staff:
+        filtered_reassigned = []
+        for e in feed_events:
+            key = _resolve_sami_group_key(e)
+            if key not in jira_reassigned_keys:
+                continue
+            job = jobs.get(key) if 'jobs' in locals() else None
+            initial_email = (job or {}).get("initial_email")
+            assigned_email = (e.get("assigned_to") or "").strip().lower()
+            if not initial_email or assigned_email == initial_email:
+                continue
+            filtered_reassigned.append(e)
+        feed_events = filtered_reassigned
+    elif staff_filter:
         sf_lower = staff_filter.strip().lower()
         feed_events = [
             e for e in feed_events
@@ -1374,13 +1446,17 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
             else:
                 dur_sec = _precomputed_dur.get(_event_key(e))
 
+        sender = (e.get("sender") or e.get("Sender") or "").strip().lower()
         result.append({
             "time": e["event_ts"].strftime("%H:%M:%S") if e["event_ts"] else "",
             "date": e["date"],
             "type": e["event_type"],
+            "action": e.get("action", "") or e.get("Action", ""),
             "subject": e["subject"][:80],
             "sami_ref": _display_sami_ref(e),
             "assigned_to": _staff_display_name(staff) if _is_staff(staff) else staff,
+            "sender": _staff_display_name(sender) if _is_staff(sender) else (e.get("sender") or e.get("Sender") or ""),
+            "domain": e.get("domain_bucket", "") or e.get("Domain Bucket", ""),
             "duration_human": format_duration_human(dur_sec) if dur_sec else "",
             "duration_sec": dur_sec if dur_sec else None,
             "risk_level": e["risk_level"],

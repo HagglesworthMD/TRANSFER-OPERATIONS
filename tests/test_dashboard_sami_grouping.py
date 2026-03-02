@@ -325,7 +325,7 @@ class DashboardSamiGroupingTests(unittest.TestCase):
                 sender="dashboard_admin",
                 msg_key="",
                 sami_id="SAMI-REASN1",
-                action="REASSIGN",
+                action="JIRA_FOLLOWUP",
                 assigned_ts="2026-02-18T10:00:00",
             ),
             self._row(
@@ -358,6 +358,169 @@ class DashboardSamiGroupingTests(unittest.TestCase):
         self.assertEqual(by_email["bob.jones@example.com"]["assigned_in_range"], 1)
         self.assertEqual(by_email["bob.jones@example.com"]["completed"], 1)
         self.assertEqual(by_email["bob.jones@example.com"]["active"], 0)
+
+
+    def test_non_jira_reassignment_is_not_counted_as_jira_followup_reassigned(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Direct assignment",
+                event_type="ASSIGNED",
+                assigned_to="alice.smith@example.com",
+                msg_key="dir-1",
+                sami_id="SAMI-DIRECT1",
+            ),
+            self._row(
+                date=self.DAY,
+                time="09:45:00",
+                subject="[COMPLETED] Direct assignment",
+                event_type="COMPLETED",
+                assigned_to="completed",
+                sender="alice.smith@example.com",
+                msg_key="dir-2",
+                sami_id="SAMI-DIRECT1",
+            ),
+        ]
+
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end=self.DAY,
+            reconciled_set=set(),
+        )
+
+        by_email = self._staff_map(payload)
+        self.assertEqual(by_email["alice.smith@example.com"]["jira_followup_reassigned"], 0)
+
+
+    def test_jira_followup_reassignment_counts_on_original_owner(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Jira follow-up assignment",
+                event_type="JIRA_FOLLOWUP_ASSIGNED",
+                action="JIRA_FOLLOWUP",
+                assigned_to="alice.smith@example.com",
+                sender="jira@example.com",
+                msg_key="jira-1",
+                sami_id="SAMI-JIRA1",
+                assigned_ts=f"{self.DAY}T09:00:00",
+            ),
+            self._row(
+                date=self.DAY,
+                time="09:30:00",
+                subject="REASSIGN: SAMI-JIRA1 alice.smith@example.com -> bob.jones@example.com",
+                event_type="REASSIGN_MANUAL",
+                assigned_to="bob.jones@example.com",
+                sender="dashboard_admin",
+                msg_key="jira-2",
+                sami_id="SAMI-JIRA1",
+                action="JIRA_FOLLOWUP",
+                assigned_ts=f"{self.DAY}T09:30:00",
+            ),
+            self._row(
+                date=self.DAY,
+                time="10:00:00",
+                subject="[COMPLETED] Jira follow-up assignment",
+                event_type="COMPLETED",
+                assigned_to="completed",
+                sender="bob.jones@example.com",
+                msg_key="jira-3",
+                sami_id="SAMI-JIRA1",
+                completed_ts=f"{self.DAY}T10:00:00",
+            ),
+        ]
+
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com", "bob.jones@example.com"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end=self.DAY,
+            reconciled_set=set(),
+        )
+
+        by_email = self._staff_map(payload)
+        self.assertEqual(by_email["alice.smith@example.com"]["jira_followup_reassigned"], 1)
+        self.assertEqual(by_email["bob.jones@example.com"]["jira_followup_reassigned"], 0)
+
+
+    def test_activity_feed_can_filter_jira_followup_reassignments_for_original_owner(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Jira follow-up assignment",
+                event_type="JIRA_FOLLOWUP_ASSIGNED",
+                action="JIRA_FOLLOWUP",
+                assigned_to="alice.smith@example.com",
+                sender="jira@example.com",
+                msg_key="jira-af-1",
+                sami_id="SAMI-JIRAFILT1",
+                assigned_ts=f"{self.DAY}T09:00:00",
+            ),
+            self._row(
+                date=self.DAY,
+                time="09:30:00",
+                subject="Jira follow-up reassigned",
+                event_type="JIRA_FOLLOWUP_ASSIGNED",
+                assigned_to="bob.jones@example.com",
+                sender="dashboard_admin",
+                msg_key="jira-af-2",
+                sami_id="SAMI-JIRAFILT1",
+                action="REASSIGN",
+                assigned_ts=f"{self.DAY}T09:30:00",
+            ),
+            self._row(
+                date=self.DAY,
+                time="10:00:00",
+                subject="Plain assignment",
+                event_type="ASSIGNED",
+                assigned_to="alice.smith@example.com",
+                sender="requester@example.com",
+                msg_key="plain-1",
+                sami_id="SAMI-PLAIN1",
+                assigned_ts=f"{self.DAY}T10:00:00",
+            ),
+            self._row(
+                date=self.DAY,
+                time="10:15:00",
+                subject="Plain reassigned",
+                event_type="JIRA_FOLLOWUP_ASSIGNED",
+                assigned_to="bob.jones@example.com",
+                sender="dashboard_admin",
+                msg_key="plain-2",
+                sami_id="SAMI-PLAIN1",
+                action="REASSIGN",
+                assigned_ts=f"{self.DAY}T10:15:00",
+            ),
+        ]
+
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com", "bob.jones@example.com"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end=self.DAY,
+            reconciled_set=set(),
+            activity_mode="jira_followup_reassigned",
+            activity_staff="Alice Smith",
+        )
+
+        self.assertEqual(len(payload["activity_feed"]), 1)
+        self.assertEqual(payload["activity_feed"][0]["type"], "JIRA_FOLLOWUP_ASSIGNED")
+        self.assertEqual(payload["activity_feed"][0]["sami_ref"], "SAMI-JIRAFILT1")
+        self.assertEqual(payload["activity_feed"][0]["sender"], "dashboard_admin")
 
 
     def test_reconciled_active_item_counts_as_completed_in_range(self):

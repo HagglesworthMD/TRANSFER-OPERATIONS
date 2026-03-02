@@ -144,6 +144,9 @@ const App = {
         if (startInput && startInput.value) params.dateStart = startInput.value;
         if (endInput && endInput.value) params.dateEnd = endInput.value;
         if (staffFilter && staffFilter.value) params.staff = staffFilter.value;
+        if (typeof ActivityFeed !== 'undefined' && typeof ActivityFeed.getQueryParams === 'function') {
+            Object.assign(params, ActivityFeed.getQueryParams());
+        }
         return Object.keys(params).length > 0 ? params : null;
     },
 
