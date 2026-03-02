@@ -984,15 +984,19 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
         event_type = (e.get("event_type") or "").strip().upper()
         if event_type == "CONFIG_CHANGED":
             return False
-        if event_type not in ("ASSIGNED", "COMPLETED"):
+        if event_type not in ("ASSIGNED", "COMPLETED", "REASSIGN_MANUAL"):
             return False
         if _is_reconciliation_only(e):
             return False
         return bool(_resolve_sami_group_key(e))
 
     source_events = all_events if all_events is not None else filtered
+    source_events = [
+        e for e in source_events
+        if not (date_end and (e.get("date") or "") and (e.get("date") or "") > date_end)
+    ]
 
-    # Canonical job lifecycle by SAMI: earliest ASSIGNED + earliest COMPLETED.
+    # Canonical job lifecycle by SAMI: latest owner as of date_end + earliest COMPLETED.
     jobs: dict[str, dict[str, Any]] = {}
     for e in source_events:
         if not _is_canonical_kpi_event(e):
@@ -1010,10 +1014,10 @@ def _compute_staff_kpis(filtered: list[dict], all_events: list[dict] | None = No
             },
         )
 
-        if event_type == "ASSIGNED":
+        if event_type in ("ASSIGNED", "REASSIGN_MANUAL"):
             job["has_assigned"] = True
             assigned_ts = _resolve_received_ts(e, "assigned")
-            if assigned_ts and (job["assigned_ts"] is None or assigned_ts < job["assigned_ts"]):
+            if assigned_ts and (job["assigned_ts"] is None or assigned_ts >= job["assigned_ts"]):
                 job["assigned_ts"] = assigned_ts
                 job["assigned_event"] = e
         elif event_type == "COMPLETED":

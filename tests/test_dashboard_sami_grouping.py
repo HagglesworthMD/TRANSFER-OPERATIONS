@@ -305,6 +305,61 @@ class DashboardSamiGroupingTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["processed_today"], 1)
         self.assertEqual(payload["summary"]["completions_today"], 0)
 
+    def test_reassigned_job_follows_new_owner_in_staff_kpis(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Job reassign",
+                event_type="ASSIGNED",
+                assigned_to="alice.smith@example.com",
+                msg_key="r1",
+                sami_id="SAMI-REASN1",
+            ),
+            self._row(
+                date="2026-02-18",
+                time="10:00:00",
+                subject="REASSIGN: SAMI-REASN1 alice.smith@example.com -> bob.jones@example.com",
+                event_type="REASSIGN_MANUAL",
+                assigned_to="bob.jones@example.com",
+                sender="dashboard_admin",
+                msg_key="",
+                sami_id="SAMI-REASN1",
+                action="REASSIGN",
+                assigned_ts="2026-02-18T10:00:00",
+            ),
+            self._row(
+                date="2026-02-18",
+                time="11:00:00",
+                subject="[COMPLETED] Job reassign",
+                event_type="COMPLETED",
+                assigned_to="completed",
+                sender="bob.jones@example.com",
+                msg_key="r2",
+                sami_id="SAMI-REASN1",
+                completed_ts="2026-02-18T11:00:00",
+            ),
+        ]
+
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["alice.smith@example.com", "bob.jones@example.com"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end="2026-02-18",
+            reconciled_set=set(),
+        )
+
+        by_email = self._staff_map(payload)
+        self.assertNotIn("alice.smith@example.com", by_email)
+        self.assertEqual(by_email["bob.jones@example.com"]["assigned"], 1)
+        self.assertEqual(by_email["bob.jones@example.com"]["assigned_in_range"], 1)
+        self.assertEqual(by_email["bob.jones@example.com"]["completed"], 1)
+        self.assertEqual(by_email["bob.jones@example.com"]["active"], 0)
+
+
     def test_reconciled_active_item_counts_as_completed_in_range(self):
         from unittest.mock import patch
 
