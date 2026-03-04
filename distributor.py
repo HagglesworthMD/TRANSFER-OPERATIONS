@@ -44,6 +44,7 @@ CONFIG = {
     "send_urgency_notifications": False,
     "enable_completion_cc": False,
     "enable_completion_workflow": False,
+    "enable_reply_chain_completion": False,
     "quarantine_folder": "Inbox/03_QUARANTINE",
     "completed_folder": "Inbox/01_COMPLETED"
 }
@@ -180,7 +181,8 @@ ALLOWED_OVERRIDES = {
     "manager_cc_addr": is_valid_email,
     "unknown_domain_mode": is_valid_unknown_domain_mode,
     "target_mailbox_store": lambda v: isinstance(v, str) and v.strip(),
-    "disable_urgent_watchdog": lambda v: isinstance(v, bool)
+    "disable_urgent_watchdog": lambda v: isinstance(v, bool),
+    "enable_reply_chain_completion": lambda v: isinstance(v, bool)
 }
 
 # ==================== SAFE_MODE ====================
@@ -714,6 +716,90 @@ def resolve_completion_sami_context(ledger, conversation_id, subject):
 
     return "", None, "no_match"
 
+
+def resolve_reply_chain_completion_match(ledger, sender_email, conversation_id, subject):
+    ledger = ledger or {}
+    sender_email = (sender_email or "").strip().lower()
+    conversation_id = "" if conversation_id is None else str(conversation_id).strip()
+    subject = "" if subject is None else str(subject).strip()
+    subject_sami = extract_sami_id_from_subject(subject)
+
+    if not sender_email:
+        return None, "", "", "sender_missing"
+    if not conversation_id:
+        return None, subject_sami, "", "conversation_missing"
+    if not subject_sami:
+        return None, "", "", "sami_missing"
+    subject_lower = subject.lower()
+    if subject_lower.startswith("fw:") or subject_lower.startswith("fwd:"):
+        return None, subject_sami, "", "forward_subject"
+    if not subject_lower.startswith("re:"):
+        return None, subject_sami, "", "not_reply_subject"
+
+    sami_key = find_ledger_key_by_sami_id(ledger, subject_sami)
+    if sami_key:
+        entry = ledger.get(sami_key, {}) if isinstance(ledger.get(sami_key, {}), dict) else {}
+        entry_assigned = str(entry.get("assigned_to") or "").strip().lower()
+        entry_conv = str(entry.get("conversation_id") or "").strip()
+        if entry.get("completed_at"):
+            return None, subject_sami, "", "already_completed"
+        if entry_assigned != sender_email:
+            return None, subject_sami, "", "assigned_to_mismatch"
+        if not entry_conv:
+            return None, subject_sami, "", "ledger_conversation_missing"
+        if entry_conv != conversation_id:
+            return None, subject_sami, "", "conversation_mismatch"
+        return sami_key, str(entry.get("sami_id") or subject_sami).strip() or subject_sami, "sami_conversation", ""
+
+    fallback_candidates = []
+    for key, entry in ledger.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("completed_at"):
+            continue
+        entry_assigned = str(entry.get("assigned_to") or "").strip().lower()
+        entry_conv = str(entry.get("conversation_id") or "").strip()
+        if entry_assigned != sender_email:
+            continue
+        if entry_conv != conversation_id:
+            continue
+        fallback_candidates.append((key, entry))
+
+    if not fallback_candidates:
+        return None, subject_sami, "", "no_active_candidate"
+    if len(fallback_candidates) != 1:
+        return None, subject_sami, "", "ambiguous_conversation"
+
+    match_key, entry = fallback_candidates[0]
+    if str(entry.get("sami_id") or "").strip():
+        return None, subject_sami, "", "ledger_sami_mismatch"
+    return match_key, subject_sami, "unique_conversation_sender", ""
+
+
+def finalize_matched_completion(msg, match_key, sender_email, subject, processed_ledger, target_store, processed,
+        domain_bucket, policy_source, completion_source, resolved_sami_id=""):
+    entry = processed_ledger.get(match_key, {})
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["completed_at"] = datetime.now().isoformat()
+    entry["completed_by"] = sender_email
+    entry["completion_source"] = completion_source
+    entry["completion_subject"] = subject
+    if resolved_sami_id and not entry.get("sami_id"):
+        entry["sami_id"] = resolved_sami_id
+    processed_ledger[match_key] = entry
+    if not save_processed_ledger(processed_ledger):
+        log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+        return False
+    msg.UnRead = False
+    _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+    if not _sb_ok:
+        log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+        append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+        return True
+    msg.Move(processed)
+    return True
+
 def compute_message_identity(msg, sender_email, subject, received_iso):
     entry_id = None
     store_id = None
@@ -1039,6 +1125,9 @@ def _parse_system_buckets_json(obj):
     held_domains, err = _parse_domains("held_domains")
     if err:
         return None, err
+    applications_direct_domains, err = _parse_domains("applications_direct_domains")
+    if err:
+        return None, err
 
     # Optional sender override lists (backward compatible — missing keys default to [])
     def _parse_senders(key):
@@ -1067,6 +1156,9 @@ def _parse_system_buckets_json(obj):
     held_senders, err = _parse_senders("held_senders")
     if err:
         return None, err
+    applications_direct_senders, err = _parse_senders("applications_direct_senders")
+    if err:
+        return None, err
 
     folders_in = obj.get("folders", {})
     allowed_folder_keys = {
@@ -1093,6 +1185,8 @@ def _parse_system_buckets_json(obj):
         "system_notification_senders": system_notification_senders,
         "quarantine_senders": quarantine_senders,
         "held_senders": held_senders,
+        "applications_direct_domains": applications_direct_domains,
+        "applications_direct_senders": applications_direct_senders,
         "folders": folders,
     }, None
 
@@ -1718,6 +1812,7 @@ def classify_sender(sender_email, sender_domain, policy):
       2. hold        (sender, then domain)
       3. system_notification (sender, then domain)
       4. external_image_request (sender, then domain)
+      5. applications_direct (sender, then domain)
     """
     email_lower = normalize_sender_for_policy(sender_email) or ""
     domain_lower = sender_domain.lower().strip() if sender_domain else ""
@@ -1731,6 +1826,8 @@ def classify_sender(sender_email, sender_domain, policy):
     sn_domains = set(d.lower().strip() for d in policy.get("system_notification_domains", []))
     eir_senders = _build_sender_override_set(policy, "transfer_senders")
     eir_domains = set(d.lower().strip() for d in policy.get("transfer_domains", []))
+    ad_senders = _build_sender_override_set(policy, "applications_direct_senders")
+    ad_domains = set(d.lower().strip() for d in policy.get("applications_direct_domains", []))
 
     # 1. Quarantine
     if email_lower and email_lower in q_senders:
@@ -1755,6 +1852,12 @@ def classify_sender(sender_email, sender_domain, policy):
         return "external_image_request", "sender"
     if domain_lower and domain_lower in eir_domains:
         return "external_image_request", "domain"
+
+    # 5. Applications direct
+    if email_lower and email_lower in ad_senders:
+        return "applications_direct", "sender"
+    if domain_lower and domain_lower in ad_domains:
+        return "applications_direct", "domain"
 
     # No explicit policy match
     return None, None
@@ -1806,6 +1909,8 @@ def get_sender_override_bucket(sender_email, policy):
         return "system_notification"
     if email_lower in _build_sender_override_set(policy, "transfer_senders"):
         return "external_image_request"
+    if email_lower in _build_sender_override_set(policy, "applications_direct_senders"):
+        return "applications_direct"
     return None
 
 # Superseded by classify_sender() for process_inbox routing — kept for backward compatibility.
@@ -2739,6 +2844,7 @@ def process_inbox():
         domain_policy["system_notification_domains"] = buckets_cfg.get("system_notification_domains", domain_policy.get("system_notification_domains", []))
         domain_policy["quarantine_domains"] = buckets_cfg.get("quarantine_domains", domain_policy.get("quarantine_domains", []))
         domain_policy["held_domains"] = buckets_cfg.get("held_domains", domain_policy.get("held_domains", []))
+        domain_policy["applications_direct_domains"] = buckets_cfg.get("applications_direct_domains", [])
         # Legacy aliases (other code may reference these names)
         domain_policy["external_image_request_domains"] = domain_policy.get("transfer_domains", [])
         domain_policy["always_hold_domains"] = domain_policy.get("held_domains", [])
@@ -2747,6 +2853,7 @@ def process_inbox():
         domain_policy["system_notification_senders"] = buckets_cfg.get("system_notification_senders", [])
         domain_policy["quarantine_senders"] = buckets_cfg.get("quarantine_senders", [])
         domain_policy["held_senders"] = buckets_cfg.get("held_senders", [])
+        domain_policy["applications_direct_senders"] = buckets_cfg.get("applications_direct_senders", [])
     policy_source = "valid" if policy_valid else "invalid_fallback"
     known_domains = get_known_domains(domain_policy) if policy_valid else set()
     allowlist_valid = bool(known_domains)
@@ -2757,6 +2864,7 @@ def process_inbox():
     target_store = overrides.get("target_mailbox_store") or ""
     completion_workflow_enabled = CONFIG.get("enable_completion_workflow", False)
     completion_cc_enabled = completion_workflow_enabled and CONFIG.get("enable_completion_cc", True)
+    reply_chain_completion_enabled = effective_config.get("enable_reply_chain_completion", False)
     effective_completion_cc = overrides.get("completion_cc_addr", COMPLETION_CC_ADDR) if overrides else COMPLETION_CC_ADDR
     if overrides and overrides.get("completion_cc_addr") and effective_completion_cc != COMPLETION_CC_ADDR:
         log("OVERRIDE_APPLIED key=completion_cc_addr", "INFO")
@@ -2999,7 +3107,7 @@ def process_inbox():
                         # No explicit policy match — fall through to existing internal/unknown logic
                         domain_bucket = classify_sender_domain(sender_domain, domain_policy) if sender_domain else "unknown"
                         # Only set match_level for explicit policy buckets, not defaults
-                        if domain_bucket in ("quarantine", "hold", "system_notification", "external_image_request"):
+                        if domain_bucket in ("quarantine", "hold", "system_notification", "external_image_request", "applications_direct"):
                             match_level = "domain"
                         else:
                             match_level = None
@@ -3134,6 +3242,46 @@ def process_inbox():
                         log(f"INTERNAL_NON_STAFF_BYPASS reason=sender_override sender={sender_email} bucket={domain_bucket}", "INFO")
                     if (not sender_override_matched) and is_internal_sender(sender_email) and is_staff_sender(sender_email, staff_list):
                         if not is_completion_subject(subject):
+                            if reply_chain_completion_enabled:
+                                rc_match_key, rc_sami_id, rc_match_mode, rc_failure = resolve_reply_chain_completion_match(
+                                    processed_ledger,
+                                    sender_email,
+                                    conversation_id,
+                                    subject,
+                                )
+                                if rc_match_key:
+                                    rc_sami_id = rc_sami_id or str(processed_ledger.get(rc_match_key, {}).get("sami_id") or "").strip()
+                                    append_stats(
+                                        subject,
+                                        sender_email,
+                                        sender_email,
+                                        "COMPLETION_MATCHED",
+                                        domain_bucket,
+                                        "COMPLETION_REPLY_CHAIN",
+                                        policy_source,
+                                        event_type="COMPLETED",
+                                        msg_key=rc_match_key,
+                                        sami_id=rc_sami_id,
+                                    )
+                                    log(f"REPLY_CHAIN_COMPLETION_MATCHED sender={sender_email} sami_id={rc_sami_id} mode={rc_match_mode}", "INFO")
+                                    if not finalize_matched_completion(
+                                        msg,
+                                        rc_match_key,
+                                        sender_email,
+                                        subject,
+                                        processed_ledger,
+                                        target_store,
+                                        processed,
+                                        domain_bucket,
+                                        policy_source,
+                                        "reply_chain",
+                                        resolved_sami_id=rc_sami_id,
+                                    ):
+                                        errors_count += 1
+                                        continue
+                                    processed_count += 1
+                                    continue
+                                log(f"REPLY_CHAIN_COMPLETION_REJECTED sender={sender_email} reason={rc_failure}", "INFO")
                             log(f"INTERNAL_STAFF_EMAIL skip_new_job sender={sender_email}", "INFO")
                             continue
 
@@ -3230,6 +3378,65 @@ def process_inbox():
                                     processed_count += 1
                             except Exception as e:
                                 log(f"HIB_ROUTE_ERROR error={e}", "ERROR")
+                        continue
+
+                    if domain_bucket == "applications_direct":
+                        log(f"APPS_FORWARD_ONLY sender={sender_email} domain={sender_domain}", "INFO")
+                        apps_action = "APPS_FORWARD_ONLY"
+                        if match_level:
+                            apps_action = f"{apps_action}/{match_level}"
+
+                        _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                        if not _sb_ok:
+                            log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+                            append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+                            continue
+
+                        if apps_team_recipients:
+                            try:
+                                fwd = msg.Forward()
+                                ok = _add_and_resolve_recipients(fwd, apps_team_recipients, kind="apps_team")
+                                if not ok:
+                                    log("APPS_FORWARD_ONLY_RECIPIENTS_INVALID", "ERROR")
+                                else:
+                                    is_safe, safe_reason = is_safe_mode()
+                                    if is_safe:
+                                        log(f"SAFE_MODE_SUPPRESS_SEND action=APPS_FORWARD_ONLY bucket={domain_bucket} reason={safe_reason}", "WARN")
+                                    else:
+                                        fwd.Send()
+                            except Exception as e:
+                                log(f"APPS_FORWARD_ONLY_SEND_FAIL error={e}", "ERROR")
+                        else:
+                            log("APPS_FORWARD_ONLY_SKIP reason=apps_team_missing", "ERROR")
+
+                        processed_ledger[message_key] = {
+                            "ts": datetime.now().isoformat(),
+                            "assigned_to": "applications_direct",
+                            "risk": "normal",
+                            "route": "APPS_FORWARD_ONLY"
+                        }
+                        if identity.get("entry_id"):
+                            processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
+                        if identity.get("store_id"):
+                            processed_ledger[message_key]["store_id"] = identity.get("store_id")
+                        if identity.get("internet_message_id"):
+                            processed_ledger[message_key]["internet_message_id"] = identity.get("internet_message_id")
+                        if conversation_id:
+                            processed_ledger[message_key]["conversation_id"] = conversation_id
+                        if not save_processed_ledger(processed_ledger):
+                            log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                            errors_count += 1
+                            continue
+
+                        append_stats(subject, "applications_direct", sender_email, "normal", domain_bucket, apps_action, policy_source)
+                        try:
+                            msg.UnRead = False
+                            msg.Move(processed)
+                        except Exception as e:
+                            log(f"MOVE_FAIL kind=applications_direct error={e}", "ERROR")
+                            errors_count += 1
+                            continue
+                        processed_count += 1
                         continue
 
                     jira_candidate = is_jira_candidate(subject, body, sender_email)
@@ -3371,11 +3578,6 @@ def process_inbox():
                             else:
                                 match_key = None
                             if match_key:
-                                entry = processed_ledger.get(match_key, {})
-                                entry["completed_at"] = datetime.now().isoformat()
-                                entry["completed_by"] = sender_email
-                                entry["completion_source"] = "subject_keyword"
-                                processed_ledger[match_key] = entry
                                 append_stats(
                                     subject,
                                     "completed",
@@ -3386,17 +3588,21 @@ def process_inbox():
                                     policy_source,
                                     sami_id=resolved_sami_id or processed_ledger.get(match_key, {}).get("sami_id", "")
                                 )
-                                if not save_processed_ledger(processed_ledger):
-                                    log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+                                if not finalize_matched_completion(
+                                    msg,
+                                    match_key,
+                                    sender_email,
+                                    subject,
+                                    processed_ledger,
+                                    target_store,
+                                    processed,
+                                    domain_bucket,
+                                    policy_source,
+                                    "subject_keyword",
+                                    resolved_sami_id=resolved_sami_id or processed_ledger.get(match_key, {}).get("sami_id", ""),
+                                ):
                                     errors_count += 1
                                     continue
-                                msg.UnRead = False
-                                _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
-                                if not _sb_ok:
-                                    log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
-                                    append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
-                                else:
-                                    msg.Move(processed)
                                 processed_count += 1
                                 continue
                             else:

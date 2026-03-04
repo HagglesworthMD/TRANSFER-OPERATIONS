@@ -180,5 +180,109 @@ class CompletionLogicTests(unittest.TestCase):
         self.assertEqual(source, "subject_sami_token")
 
 
+    def test_resolve_reply_chain_completion_match_strict_success(self):
+        ledger = {
+            "job-1": {
+                "assigned_to": "staff@example.com",
+                "sami_id": "SAMI-ABC123",
+                "conversation_id": "conv-1",
+            }
+        }
+        key, sami_id, mode, reason = distributor.resolve_reply_chain_completion_match(
+            ledger,
+            "staff@example.com",
+            "conv-1",
+            "Re: [SAMI-ABC123] done",
+        )
+        self.assertEqual((key, sami_id, mode, reason), ("job-1", "SAMI-ABC123", "sami_conversation", ""))
+
+    def test_resolve_reply_chain_completion_match_rejects_wrong_staff(self):
+        ledger = {
+            "job-1": {
+                "assigned_to": "staff@example.com",
+                "sami_id": "SAMI-ABC123",
+                "conversation_id": "conv-1",
+            }
+        }
+        key, sami_id, mode, reason = distributor.resolve_reply_chain_completion_match(
+            ledger,
+            "other@example.com",
+            "conv-1",
+            "Re: [SAMI-ABC123] done",
+        )
+        self.assertIsNone(key)
+        self.assertEqual(sami_id, "SAMI-ABC123")
+        self.assertEqual(reason, "assigned_to_mismatch")
+
+    def test_resolve_reply_chain_completion_match_requires_conversation(self):
+        ledger = {
+            "job-1": {
+                "assigned_to": "staff@example.com",
+                "sami_id": "SAMI-ABC123",
+                "conversation_id": "conv-1",
+            }
+        }
+        key, sami_id, mode, reason = distributor.resolve_reply_chain_completion_match(
+            ledger,
+            "staff@example.com",
+            "",
+            "Re: [SAMI-ABC123] done",
+        )
+        self.assertIsNone(key)
+        self.assertEqual(reason, "conversation_missing")
+
+    def test_resolve_reply_chain_completion_match_rejects_forward_subject(self):
+        ledger = {
+            "job-1": {
+                "assigned_to": "staff@example.com",
+                "sami_id": "SAMI-ABC123",
+                "conversation_id": "conv-1",
+            }
+        }
+        key, sami_id, mode, reason = distributor.resolve_reply_chain_completion_match(
+            ledger,
+            "staff@example.com",
+            "conv-1",
+            "FW: [SAMI-ABC123] done",
+        )
+        self.assertIsNone(key)
+        self.assertEqual(reason, "forward_subject")
+
+    def test_resolve_reply_chain_completion_match_fallback_unique_sender_conversation(self):
+        ledger = {
+            "job-1": {
+                "assigned_to": "staff@example.com",
+                "conversation_id": "conv-1",
+            }
+        }
+        key, sami_id, mode, reason = distributor.resolve_reply_chain_completion_match(
+            ledger,
+            "staff@example.com",
+            "conv-1",
+            "Re: [SAMI-ABC123] done",
+        )
+        self.assertEqual((key, sami_id, mode, reason), ("job-1", "SAMI-ABC123", "unique_conversation_sender", ""))
+
+    def test_resolve_reply_chain_completion_match_rejects_ambiguous_fallback(self):
+        ledger = {
+            "job-1": {
+                "assigned_to": "staff@example.com",
+                "conversation_id": "conv-1",
+            },
+            "job-2": {
+                "assigned_to": "staff@example.com",
+                "conversation_id": "conv-1",
+            },
+        }
+        key, sami_id, mode, reason = distributor.resolve_reply_chain_completion_match(
+            ledger,
+            "staff@example.com",
+            "conv-1",
+            "Re: [SAMI-ABC123] done",
+        )
+        self.assertIsNone(key)
+        self.assertEqual(reason, "ambiguous_conversation")
+
+
 if __name__ == '__main__':
     unittest.main()
