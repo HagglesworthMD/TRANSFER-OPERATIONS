@@ -1710,6 +1710,11 @@ async def add_domain(bucket: str, body: DomainRequest):
     domains = payload.get(key, [])
     if domain in domains:
         raise HTTPException(status_code=400, detail=f"{domain} already in {bucket}")
+    for other_bucket, other_key in _DOMAIN_BUCKETS.items():
+        if other_key == key:
+            continue
+        if domain in payload.get(other_key, []):
+            raise HTTPException(status_code=400, detail=f"{domain} already in {other_bucket}")
     domains.append(domain)
     payload[key] = domains
     ok, err = _save_domain_policy_payload(payload)
@@ -1753,6 +1758,11 @@ async def add_sender(bucket: str, body: SenderRequest):
     senders = payload.get(key, [])
     if sender in senders:
         raise HTTPException(status_code=400, detail=f"{sender} already in {bucket}")
+    for other_bucket, other_key in _SENDER_BUCKETS.items():
+        if other_key == key:
+            continue
+        if sender in payload.get(other_key, []):
+            raise HTTPException(status_code=400, detail=f"{sender} already in {other_bucket}")
     senders.append(sender)
     payload[key] = senders
     ok, err = _save_domain_policy_payload(payload)
