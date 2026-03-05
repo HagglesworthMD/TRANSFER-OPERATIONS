@@ -1,4 +1,5 @@
 ﻿import unittest
+from unittest.mock import patch
 
 from dashboard.backend.kpi_engine import compute_dashboard
 
@@ -107,17 +108,21 @@ class DashboardSamiGroupingTests(unittest.TestCase):
                 sami_id="SAMI-BBB222",
             ),
         ]
+        ledger = {
+            "b1": {"sami_id": "SAMI-BBB222", "assigned_to": "alice.smith@example.com"},
+        }
 
-        payload = compute_dashboard(
-            rows,
-            roster_state=None,
-            settings=None,
-            staff_list=["alice.smith@example.com"],
-            hib_state=None,
-            date_start=self.DAY,
-            date_end=self.DAY,
-            reconciled_set=set(),
-        )
+        with patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
+            payload = compute_dashboard(
+                rows,
+                roster_state=None,
+                settings=None,
+                staff_list=["alice.smith@example.com"],
+                hib_state=None,
+                date_start=self.DAY,
+                date_end=self.DAY,
+                reconciled_set=set(),
+            )
 
         by_email = self._staff_map(payload)
         self.assertEqual(by_email["alice.smith@example.com"]["assigned"], 1)
@@ -223,20 +228,24 @@ class DashboardSamiGroupingTests(unittest.TestCase):
                 sami_id="SAMI-EEE555",
             ),
         ]
+        ledger = {
+            "e1": {"sami_id": "SAMI-EEE555", "assigned_to": "alice.smith@example.com"},
+        }
 
-        payload = compute_dashboard(
-            rows,
-            roster_state=None,
-            settings=None,
-            staff_list=["alice.smith@example.com"],
-            hib_state=None,
-            date_start=self.DAY,
-            date_end=self.DAY,
-            reconciled_set=set(),
-        )
+        with patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
+            payload = compute_dashboard(
+                rows,
+                roster_state=None,
+                settings=None,
+                staff_list=["alice.smith@example.com"],
+                hib_state=None,
+                date_start=self.DAY,
+                date_end=self.DAY,
+                reconciled_set=set(),
+            )
 
-        self.assertEqual(payload["summary"]["active_count"], 1)
-        self.assertEqual(sum(r["active"] for r in payload["staff_kpis"]), 1)
+        self.assertEqual(payload["summary"]["active_count"], 0)
+        self.assertEqual(sum(r["active"] for r in payload["staff_kpis"]), 0)
 
 
 
@@ -576,8 +585,6 @@ class DashboardSamiGroupingTests(unittest.TestCase):
 
 
     def test_reconciled_active_item_counts_as_completed_in_range(self):
-        from unittest.mock import patch
-
         rows = [
             self._row(
                 date=self.DAY,
@@ -602,7 +609,11 @@ class DashboardSamiGroupingTests(unittest.TestCase):
                 }
             ],
         }
-        with patch("dashboard.backend.reconciliation.load_reconciled", return_value=fake_state):
+        ledger = {
+            "rec-1": {"sami_id": "SAMI-REC001", "assigned_to": "alice.smith@example.com"},
+        }
+        with patch("dashboard.backend.reconciliation.load_reconciled", return_value=fake_state), \
+             patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
             payload = compute_dashboard(
                 rows,
                 roster_state=None,

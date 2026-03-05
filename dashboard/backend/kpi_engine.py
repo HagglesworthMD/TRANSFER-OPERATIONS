@@ -185,6 +185,25 @@ def _load_system_domains() -> set[str]:
     return _system_notification_domains
 
 
+def _load_processed_ledger_by_sami() -> dict[str, dict]:
+    from . import data_reader
+
+    ledger_path = config.BASE_DIR / "processed_ledger.json"
+    data, _ = data_reader.load_json(ledger_path)
+    if not isinstance(data, dict):
+        return {}
+
+    by_sami: dict[str, dict] = {}
+    for entry in data.values():
+        if not isinstance(entry, dict):
+            continue
+        sami_id = (entry.get("sami_id") or "").strip().upper()
+        if not sami_id:
+            continue
+        by_sami[sami_id] = entry
+    return by_sami
+
+
 def _sender_display_name(email: str) -> str:
     """Map sender email to a friendly source label."""
     if not email or "@" not in email:
@@ -493,19 +512,22 @@ def _resolve_sami_group_key(e: dict) -> str:
     return _extract_sami_ref((e.get("subject") or "").strip()).lower()
 
 
-def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: str | None = None) -> list[dict]:
+def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: str | None = None,
+                                  date_start: str | None = None) -> list[dict]:
     """Return likely-open ticket identities as of *date_end* before reconciliation filtering."""
     events = _normalise_rows(rows)
     candidates = [
         e for e in events
-        if e.get("event_type") in ("ASSIGNED", "REASSIGN_MANUAL") and (not (e.get("date") or "") or (e.get("date") or "") <= date_end)
+        if e.get("event_type") in ("ASSIGNED", "REASSIGN_MANUAL", "STALE_RELOOP") and (not (e.get("date") or "") or (e.get("date") or "") <= date_end)
     ]
 
     staff_target = (staff_name or "").strip().lower()
+    start_cutoff = _parse_ts(f"{date_start}T00:00:00") if date_start else None
 
     completed_sami_keys: set[str] = set()
     for e in events:
-        if e.get("event_type") != "COMPLETED":
+        event_type = (e.get("event_type") or "").strip().upper()
+        if event_type not in ("COMPLETED", "FILTER_JONES_COMPLETION", "COMPLETION_SWEEP"):
             continue
         if (e.get("date") or "") > date_end:
             continue
@@ -528,6 +550,17 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
         msg_key = (e.get("msg_key") or "").strip().lower()
         sami_key = _resolve_sami_group_key(e)
         current_ts = e.get("event_ts")
+        event_type = (e.get("event_type") or "").strip().upper()
+
+        # STALE_RELOOP rows are operational reloop artifacts, not active-job ownership rows.
+        if event_type == "STALE_RELOOP":
+            continue
+
+        if start_cutoff:
+            if current_ts and current_ts < start_cutoff:
+                continue
+            if not current_ts and (e.get("date") or "") and (e.get("date") or "") < (date_start or ""):
+                continue
 
         if sami_key and sami_key in completed_sami_keys:
             continue
@@ -559,6 +592,25 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
         }
 
     rows_out = list(latest_by_identity.values())
+    ledger_by_sami = _load_processed_ledger_by_sami()
+    filtered_rows: list[dict] = []
+    for row in rows_out:
+        sami_ref = (row.get("SAMI Ref") or "").strip().upper()
+        if not sami_ref:
+            filtered_rows.append(row)
+            continue
+        entry = ledger_by_sami.get(sami_ref)
+        if not entry:
+            continue
+        assigned_to = entry.get("assigned_to")
+        if assigned_to is None:
+            continue
+        assigned_to_norm = str(assigned_to).strip().lower()
+        if assigned_to_norm in ("", "completed"):
+            continue
+        filtered_rows.append(row)
+
+    rows_out = filtered_rows
     rows_out.sort(key=lambda r: (r.get("event_ts") is not None, r.get("event_ts"), r.get("Date", ""), r.get("Time", "")), reverse=True)
     return rows_out
 
@@ -568,12 +620,10 @@ def export_active_events(rows: list[dict], date_start: str, date_end: str,
                          reconciled_set: set[str] | None = None) -> list[dict]:
     """Return likely-open ASSIGNED tickets with SAMI references for CSV/export.
 
-    Active scope is "open as of end date": include assignments on or before
-    date_end that are not completed by date_end. date_start is accepted for
-    API compatibility but does not constrain active backlog.
+    Active scope is constrained to assignments within date_start/date_end and
+    excludes tickets completed by date_end.
     """
-    _ = date_start
-    rows_out = _collect_active_identity_rows(rows, date_end, staff_name=staff_name)
+    rows_out = _collect_active_identity_rows(rows, date_end, staff_name=staff_name, date_start=date_start)
 
     # Filter out reconciled identities BEFORE aggregation/output
     if reconciled_set:
@@ -711,7 +761,7 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     processed = len(processed_keys)
 
     # Keep summary active_count in parity with /api/active modal output.
-    active_rows_all = _collect_active_identity_rows(rows, de, staff_name=staff_filter)
+    active_rows_all = _collect_active_identity_rows(rows, de, staff_name=staff_filter, date_start=ds)
     reconciled_completed_rows = []
     if reconciled_set:
         reconciled_completed_rows = [

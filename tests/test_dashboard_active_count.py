@@ -157,8 +157,13 @@ class DashboardActiveCountTests(unittest.TestCase):
                 + [{"staff_email": "bob.jones@example.com"} for _ in range(500)]
             )
         }
+        ledger = {
+            "g1": {"sami_id": "SAMI-GGG777", "assigned_to": "alice.smith@example.com"},
+            "h1": {"sami_id": "SAMI-HHH888", "assigned_to": "bob.jones@example.com"},
+        }
 
-        with patch("dashboard.backend.reconciliation.load_reconciled", return_value=fake_state):
+        with patch("dashboard.backend.reconciliation.load_reconciled", return_value=fake_state), \
+             patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
             payload = compute_dashboard(
                 rows,
                 roster_state=None,
@@ -390,21 +395,26 @@ class DashboardActiveCountTests(unittest.TestCase):
                 sami_id="SAMI-XYZ123",
             ),
         ]
+        ledger = {
+            "legacy-z1": {"sami_id": "SAMI-XYZ123", "assigned_to": "alice.smith@example.com"},
+        }
 
-        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+        with patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
+            active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
         self.assertEqual(len(active_rows), 1)
         self.assertEqual(active_rows[0]["SAMI Ref"], "SAMI-XYZ123")
 
-        payload = compute_dashboard(
-            rows,
-            roster_state=None,
-            settings=None,
-            staff_list=["alice.smith@example.com"],
-            hib_state=None,
-            date_start=self.DAY,
-            date_end=self.DAY,
-            reconciled_set=set(),
-        )
+        with patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
+            payload = compute_dashboard(
+                rows,
+                roster_state=None,
+                settings=None,
+                staff_list=["alice.smith@example.com"],
+                hib_state=None,
+                date_start=self.DAY,
+                date_end=self.DAY,
+                reconciled_set=set(),
+            )
         self.assertEqual(payload["activity_feed"][0]["sami_ref"], "SAMI-XYZ123")
 
     def test_completed_subject_sami_does_not_close_when_completed_sami_id_mismatches(self):
@@ -432,6 +442,137 @@ class DashboardActiveCountTests(unittest.TestCase):
 
         active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
         self.assertEqual(len(active_rows), 1)
+
+    def test_stale_reloop_updates_active_owner(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Image transfer request",
+                event_type="ASSIGNED",
+                assigned_to="john.drousas@sa.gov.au",
+                msg_key="stale-1",
+                sami_id="SAMI-B2F9FB",
+            ),
+            self._row(
+                date=self.DAY,
+                time="11:43:55",
+                subject="STALE_RELOOP key=stale-1",
+                event_type="STALE_RELOOP",
+                assigned_to="prav.mudaliar@sa.gov.au",
+                sender="system",
+                msg_key="stale-1",
+                sami_id="SAMI-B2F9FB",
+                action="STALE_RELOOP",
+                assigned_ts=f"{self.DAY}T11:43:55",
+            ),
+        ]
+
+        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+        self.assertEqual(len(active_rows), 1)
+        self.assertEqual(active_rows[0]["SAMI Ref"], "SAMI-B2F9FB")
+        self.assertEqual(active_rows[0]["Staff Email"], "john.drousas@sa.gov.au")
+
+    def test_filter_jones_completion_closes_active_sami(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Image transfer request",
+                event_type="ASSIGNED",
+                assigned_to="john.drousas@sa.gov.au",
+                msg_key="fjc-1",
+                sami_id="SAMI-FJC001",
+            ),
+            self._row(
+                date=self.DAY,
+                time="10:00:00",
+                subject="FILTER_JONES_COMPLETION key=fjc-1",
+                event_type="FILTER_JONES_COMPLETION",
+                assigned_to="system",
+                sender="system",
+                msg_key="fjc-1",
+                sami_id="SAMI-FJC001",
+                action="FILTER_JONES_COMPLETION",
+            ),
+        ]
+
+        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+        self.assertEqual(len(active_rows), 0)
+
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["john.drousas@sa.gov.au"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end=self.DAY,
+            reconciled_set=set(),
+        )
+        self.assertEqual(payload["summary"]["active_count"], 0)
+
+    def test_ledger_closed_assignment_is_removed_from_active_rows(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Image transfer request",
+                event_type="ASSIGNED",
+                assigned_to="john.drousas@sa.gov.au",
+                msg_key="ledger-1",
+                sami_id="SAMI-LEDGER1",
+            ),
+        ]
+        ledger = {
+            "ledger-key-1": {
+                "sami_id": "SAMI-LEDGER1",
+                "assigned_to": "",
+            }
+        }
+
+        with patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
+            active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+            self.assertEqual(len(active_rows), 0)
+
+    def test_active_assignment_before_date_start_is_excluded(self):
+        rows = [
+            self._row(
+                date="2026-02-28",
+                time="09:00:00",
+                subject="Old open job",
+                event_type="ASSIGNED",
+                assigned_to="john.drousas@sa.gov.au",
+                msg_key="old-1",
+                sami_id="SAMI-OLD001",
+            ),
+        ]
+        ledger = {
+            "old-1": {"sami_id": "SAMI-OLD001", "assigned_to": "john.drousas@sa.gov.au"},
+        }
+
+        with patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
+            active_rows = export_active_events(rows, "2026-03-05", "2026-03-05", reconciled_set=set())
+            self.assertEqual(len(active_rows), 0)
+
+    def test_stale_reloop_without_sami_is_excluded_from_active(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="11:43:55",
+                subject="STALE_RELOOP key=store:0000000038A1BB100...",
+                event_type="STALE_RELOOP",
+                assigned_to="hannah.cutting@sa.gov.au",
+                sender="system",
+                msg_key="store:abc|entry:xyz",
+                sami_id="",
+                action="STALE_RELOOP",
+                assigned_ts=f"{self.DAY}T11:43:55",
+            ),
+        ]
+
+        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+        self.assertEqual(len(active_rows), 0)
 
 
 if __name__ == "__main__":
