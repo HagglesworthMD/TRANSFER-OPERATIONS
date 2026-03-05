@@ -82,6 +82,7 @@ COMPLETION_FOOTER_TEMPLATE = (
     "please email {mailbox} and quote reference {ref}."
 )
 HEARTBEAT_INTERVAL_SECONDS = 300
+RELOOP_PROTECTION_WINDOW = 60
 JIRA_FOLLOW_UP_FOLDER_PATH = "Inbox/06_JIRA_FOLLOW_UP"
 JIRA_FOLLOW_UP_SUBJECT_PREFIX = "[JIRA FOLLOW-UP] "
 JIRA_FOLLOW_UP_BANNER = (
@@ -1336,6 +1337,66 @@ def _parse_iso_safe(iso_str):
     except Exception:
         return None
 
+def _is_recent_reloop_timestamp(last_reloop_iso, now_dt):
+    parsed = _parse_iso_safe(last_reloop_iso)
+    if not parsed:
+        return False
+    return (now_dt - parsed).total_seconds() < RELOOP_PROTECTION_WINDOW
+
+def _has_recent_reloop_for_sami(processed_ledger, sami_id, now_dt):
+    sid = str(sami_id or "").strip().upper()
+    if not sid or not isinstance(processed_ledger, dict):
+        return False
+    for entry in processed_ledger.values():
+        if not isinstance(entry, dict):
+            continue
+        entry_sid = str(entry.get("sami_id") or "").strip().upper()
+        if entry_sid != sid:
+            continue
+        if _is_recent_reloop_timestamp(entry.get("stale_last_reloop_at"), now_dt):
+            return True
+    return False
+
+def _resolve_stale_reloop_runtime():
+    if not OUTLOOK_AVAILABLE:
+        return None, None, ""
+    try:
+        overrides = load_settings_overrides(SETTINGS_OVERRIDES_PATH) or {}
+        effective_config = CONFIG.copy()
+        if isinstance(overrides, dict):
+            effective_config.update(overrides)
+        target_store = ""
+        if isinstance(overrides, dict):
+            target_store = overrides.get("target_mailbox_store") or ""
+        namespace = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+        if target_store:
+            mailbox = get_store_root_by_display_name(namespace, target_store)
+        else:
+            mailbox = find_mailbox_root_robust(namespace, effective_config["mailbox"])
+        if not mailbox:
+            return None, None, target_store
+        inbox, _ = resolve_folder(mailbox, effective_config["inbox_folder"])
+        if not inbox:
+            return None, None, target_store
+        return namespace, inbox, target_store
+    except Exception as e:
+        log(f"STALE_RELOOP_RUNTIME_FAIL error={e}", "ERROR")
+        return None, None, ""
+
+def _resolve_mailitem_from_ledger_entry(namespace, entry):
+    if namespace is None or not isinstance(entry, dict):
+        return None
+    entry_id = str(entry.get("entry_id") or "").strip()
+    if not entry_id:
+        return None
+    store_id = str(entry.get("store_id") or "").strip()
+    try:
+        if store_id:
+            return namespace.GetItemFromID(entry_id, store_id)
+        return namespace.GetItemFromID(entry_id)
+    except Exception:
+        return None
+
 def _deterministic_next_staff_after_owner(old_assignee, staff_list):
     """Pick next staff deterministically from sorted roster, no pointer mutation."""
     if not staff_list:
@@ -1352,16 +1413,21 @@ def _deterministic_next_staff_after_owner(old_assignee, staff_list):
     return normalized[0]
 
 def process_stale_assignment_reloop():
-    """Reassign stale ledger-owned work without Outlook side-effects."""
+    """Move stale assignments back to inbox and mark unread for requeue."""
     staff_list = sorted(get_staff_list())
     if not staff_list:
         log("STALE_RELOOP_SKIP reason=no_staff_available", "INFO")
-        return
+        return True
 
     processed_ledger = load_processed_ledger()
     if not isinstance(processed_ledger, dict):
         log("STALE_RELOOP_SKIP reason=ledger_unavailable", "WARN")
-        return
+        return True
+
+    namespace, inbox, target_store = _resolve_stale_reloop_runtime()
+    if not namespace or not inbox:
+        log("STALE_RELOOP_SKIP reason=mailbox_unavailable", "WARN")
+        return False
 
     stale_threshold = timedelta(hours=12)
     max_reloops = 3
@@ -1432,17 +1498,28 @@ def process_stale_assignment_reloop():
             changed = True
             continue
 
-        new_assignee = _deterministic_next_staff_after_owner(assigned_to, staff_list)
-        if not new_assignee:
+        stale_item = _resolve_mailitem_from_ledger_entry(namespace, entry)
+        if stale_item is None:
+            log(f"STALE_RELOOP_ITEM_NOT_FOUND key={ledger_key}", "WARN")
             continue
+        _sb_ok, _sb_actual = check_msg_mailbox_store(stale_item, target_store)
+        if not _sb_ok:
+            log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+            continue
+        try:
+            stale_item.UnRead = True
+            stale_item.Move(inbox)
+        except Exception as e:
+            log(f"STALE_RELOOP_MOVE_FAIL key={ledger_key} error={e}", "ERROR")
+            continue
+
         entry["stale_last_owner"] = assigned_to
-        entry["assigned_to"] = new_assignee
-        entry["ts"] = now_dt.isoformat()
+        entry["assigned_to"] = ""
         entry["stale_last_reloop_at"] = now_dt.isoformat()
         entry["stale_reloop_count"] = current_reloops + 1
         append_stats(
             subject=f"STALE_RELOOP key={ledger_key}",
-            assigned_to=new_assignee,
+            assigned_to="unassigned",
             sender="system",
             risk_level=entry.get("risk", "normal") or "normal",
             domain_bucket="",
@@ -1450,7 +1527,7 @@ def process_stale_assignment_reloop():
             policy_source="stale_reloop",
             event_type="STALE_RELOOP",
             msg_key=ledger_key,
-            status_after="assigned",
+            status_after="relooped",
             assigned_ts=now_dt.isoformat(),
             completed_ts="",
             duration_sec="",
@@ -1461,8 +1538,9 @@ def process_stale_assignment_reloop():
     if changed:
         if not save_processed_ledger(processed_ledger):
             log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
-            return
-    log(f"STALE_RELOOP_DONE scanned={len(processed_ledger)} stale_candidates={stale_count} changed={1 if changed else 0}", "INFO")
+            return True
+    log(f"STALE_RELOOP_DONE scanned={len(processed_ledger)} stale_candidates={stale_count} changed={changed}", "INFO")
+    return True
 
 def _add_and_resolve_recipients(mail, addrs, *, kind):
     recips = mail.Recipients
@@ -3303,6 +3381,12 @@ def process_inbox():
                         conversation_id = None
 
                     message_key, identity = compute_message_identity(msg, sender_email, subject, received_iso)
+                    message_now = datetime.now()
+                    message_sami_id = (
+                        extract_sami_id_from_subject(subject_with_id)
+                        or compute_sami_id(msg)
+                        or ""
+                    )
                     entry_id = identity.get("entry_id")
                     if entry_id:
                         msg_id = entry_id
@@ -3311,11 +3395,39 @@ def process_inbox():
                     if message_key.startswith("fallback:"):
                         msg_id = identity.get("entry_id") or identity.get("conversation_id") or ""
                         log(f"LEDGER_FALLBACK_KEY msg_id={msg_id}", "WARN")
-                    
-                    if message_key in processed_ledger:
-                        log(f"LEDGER_SKIP {message_key}", "WARN")
+
+                    if message_sami_id and _has_recent_reloop_for_sami(processed_ledger, message_sami_id, message_now):
+                        append_stats(
+                            subject,
+                            "skipped",
+                            sender_email,
+                            "normal",
+                            domain_bucket,
+                            "RELOOP_SKIP_SAME_TICK",
+                            "stale_reloop",
+                            event_type="RELOOP_SKIP_SAME_TICK",
+                            msg_key=message_key,
+                            status_after="skipped",
+                            sami_id=message_sami_id,
+                        )
+                        log(f"RELOOP_SKIP_SAME_TICK sami_id={message_sami_id} reason=recent_reloop", "INFO")
                         skipped_count += 1
                         continue
+
+                    if message_key in processed_ledger:
+                        existing_entry = processed_ledger.get(message_key)
+                        if isinstance(existing_entry, dict):
+                            is_reloop_candidate = bool(existing_entry.get("stale_last_reloop_at")) and not str(existing_entry.get("assigned_to") or "").strip()
+                            if is_reloop_candidate:
+                                log(f"RELOOP_REQUEUE_READY key={message_key}", "INFO")
+                            else:
+                                log(f"LEDGER_SKIP {message_key}", "WARN")
+                                skipped_count += 1
+                                continue
+                        else:
+                            log(f"LEDGER_SKIP {message_key}", "WARN")
+                            skipped_count += 1
+                            continue
 
                     if is_hib_notification(msg):
                         subject_prefix = re.sub(r"\d", "X", subject or "")[:60]
@@ -4539,30 +4651,31 @@ def process_inbox():
 
 def run_job():
     """Main job: Process inbox + stale reloop + reassign queue"""
-    global _mailbox_resolution_ok_last_tick
+    stale_mailbox_ok = True
+    # Run stale pass first so reloop guard can suppress same-tick reassignment.
+    try:
+        stale_mailbox_ok = process_stale_assignment_reloop()
+    except Exception as e:
+        stale_mailbox_ok = False
+        log(f"Error in process_stale_assignment_reloop: {e}", "ERROR")
+    if stale_mailbox_ok is False:
+        append_stats(
+            subject="",
+            assigned_to="skipped",
+            sender="system",
+            risk_level="normal",
+            domain_bucket="",
+            action="STALE_SKIP_MAILBOX_UNAVAILABLE",
+            policy_source="stale_reloop",
+            event_type="STALE_SKIP_MAILBOX_UNAVAILABLE",
+            status_after="skipped",
+        )
+        log("STALE_SKIP_MAILBOX_UNAVAILABLE", "WARN")
+
     try:
         process_inbox()
     except Exception as e:
         log(f"Error in process_inbox: {e}", "ERROR")
-    # Process stale reloop only when mailbox/folder resolution succeeded this tick.
-    try:
-        if not _mailbox_resolution_ok_last_tick:
-            append_stats(
-                subject="",
-                assigned_to="skipped",
-                sender="system",
-                risk_level="normal",
-                domain_bucket="",
-                action="STALE_SKIP_MAILBOX_UNAVAILABLE",
-                policy_source="stale_reloop",
-                event_type="STALE_SKIP_MAILBOX_UNAVAILABLE",
-                status_after="skipped",
-            )
-            log("STALE_SKIP_MAILBOX_UNAVAILABLE", "WARN")
-        else:
-            process_stale_assignment_reloop()
-    except Exception as e:
-        log(f"Error in process_stale_assignment_reloop: {e}", "ERROR")
     # Process reassign queue independently (never crashes main loop)
     try:
         process_reassign_queue()
