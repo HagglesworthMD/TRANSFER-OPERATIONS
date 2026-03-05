@@ -1429,7 +1429,7 @@ def process_stale_assignment_reloop():
         log("STALE_RELOOP_SKIP reason=mailbox_unavailable", "WARN")
         return False
 
-    stale_threshold = timedelta(hours=12)
+    stale_threshold = timedelta(hours=6)
     max_reloops = 3
     now_dt = datetime.now()
     changed = False
