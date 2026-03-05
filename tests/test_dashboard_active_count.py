@@ -467,11 +467,15 @@ class DashboardActiveCountTests(unittest.TestCase):
                 assigned_ts=f"{self.DAY}T11:43:55",
             ),
         ]
+        ledger = {
+            "stale-1": {"sami_id": "SAMI-B2F9FB", "assigned_to": "prav.mudaliar@sa.gov.au"},
+        }
 
-        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+        with patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
+            active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
         self.assertEqual(len(active_rows), 1)
         self.assertEqual(active_rows[0]["SAMI Ref"], "SAMI-B2F9FB")
-        self.assertEqual(active_rows[0]["Staff Email"], "john.drousas@sa.gov.au")
+        self.assertEqual(active_rows[0]["Staff Email"], "prav.mudaliar@sa.gov.au")
 
     def test_filter_jones_completion_closes_active_sami(self):
         rows = [

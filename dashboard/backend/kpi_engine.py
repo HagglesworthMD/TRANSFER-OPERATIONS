@@ -608,6 +608,8 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
         assigned_to_norm = str(assigned_to).strip().lower()
         if assigned_to_norm in ("", "completed"):
             continue
+        row["Staff Email"] = assigned_to_norm
+        row["Staff"] = _staff_display_name(assigned_to_norm)
         filtered_rows.append(row)
 
     rows_out = filtered_rows
