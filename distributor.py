@@ -102,6 +102,7 @@ _safe_mode_cache = None
 _safe_mode_inbox = None
 _live_test_override = False
 _jira_followup_folder_error_logged = False
+_mailbox_resolution_ok_last_tick = True
 
 # Hot-reloaded dashboard-managed config (last-known-good per file).
 _hot_config_state = {
@@ -1334,6 +1335,134 @@ def _parse_iso_safe(iso_str):
         return datetime.fromisoformat(iso_str)
     except Exception:
         return None
+
+def _deterministic_next_staff_after_owner(old_assignee, staff_list):
+    """Pick next staff deterministically from sorted roster, no pointer mutation."""
+    if not staff_list:
+        return None
+    normalized = [s.strip().lower() for s in staff_list if isinstance(s, str) and s.strip()]
+    if not normalized:
+        return None
+    if not old_assignee:
+        return normalized[0]
+    old_lower = str(old_assignee).strip().lower()
+    if old_lower in normalized:
+        idx = normalized.index(old_lower)
+        return normalized[(idx + 1) % len(normalized)]
+    return normalized[0]
+
+def process_stale_assignment_reloop():
+    """Reassign stale ledger-owned work without Outlook side-effects."""
+    staff_list = sorted(get_staff_list())
+    if not staff_list:
+        log("STALE_RELOOP_SKIP reason=no_staff_available", "INFO")
+        return
+
+    processed_ledger = load_processed_ledger()
+    if not isinstance(processed_ledger, dict):
+        log("STALE_RELOOP_SKIP reason=ledger_unavailable", "WARN")
+        return
+
+    stale_threshold = timedelta(hours=12)
+    max_reloops = 3
+    now_dt = datetime.now()
+    changed = False
+    stale_count = 0
+
+    non_staff_assignees = {
+        "bot", "completed", "error", "hib", "hold", "manager_review",
+        "non_actionable", "quarantined", "skipped", "system_notification", "applications_direct"
+    }
+    staff_set = set(s.strip().lower() for s in staff_list)
+
+    for ledger_key in sorted(processed_ledger.keys()):
+        entry = processed_ledger.get(ledger_key)
+        if not isinstance(entry, dict):
+            continue
+
+        assigned_to = str(entry.get("assigned_to") or "").strip().lower()
+        if not assigned_to:
+            continue
+        if assigned_to in non_staff_assignees:
+            continue
+        if assigned_to not in staff_set:
+            continue
+        if entry.get("completed_at"):
+            continue
+
+        ts_dt = _parse_iso_safe(entry.get("ts"))
+        reloop_dt = _parse_iso_safe(entry.get("stale_last_reloop_at"))
+        if ts_dt and reloop_dt:
+            last_touch = reloop_dt if reloop_dt >= ts_dt else ts_dt
+        else:
+            last_touch = reloop_dt or ts_dt
+        if not last_touch:
+            continue
+        if (now_dt - last_touch) < stale_threshold:
+            continue
+
+        stale_count += 1
+        current_reloops = entry.get("stale_reloop_count", 0)
+        try:
+            current_reloops = int(current_reloops)
+        except Exception:
+            current_reloops = 0
+
+        sami_id = str(entry.get("sami_id") or "").strip()
+        if current_reloops >= max_reloops:
+            entry["assigned_to"] = "manager_review"
+            entry["stale_escalated_at"] = now_dt.isoformat()
+            entry["stale_last_owner"] = assigned_to
+            append_stats(
+                subject=f"STALE_RELOOP_MAXED key={ledger_key}",
+                assigned_to="manager_review",
+                sender="system",
+                risk_level=entry.get("risk", "normal") or "normal",
+                domain_bucket="",
+                action="STALE_RELOOP_MAXED",
+                policy_source="stale_reloop",
+                event_type="STALE_RELOOP",
+                msg_key=ledger_key,
+                status_after="manager_review",
+                assigned_ts=now_dt.isoformat(),
+                completed_ts="",
+                duration_sec="",
+                sami_id=sami_id,
+            )
+            changed = True
+            continue
+
+        new_assignee = _deterministic_next_staff_after_owner(assigned_to, staff_list)
+        if not new_assignee:
+            continue
+        entry["stale_last_owner"] = assigned_to
+        entry["assigned_to"] = new_assignee
+        entry["ts"] = now_dt.isoformat()
+        entry["stale_last_reloop_at"] = now_dt.isoformat()
+        entry["stale_reloop_count"] = current_reloops + 1
+        append_stats(
+            subject=f"STALE_RELOOP key={ledger_key}",
+            assigned_to=new_assignee,
+            sender="system",
+            risk_level=entry.get("risk", "normal") or "normal",
+            domain_bucket="",
+            action="STALE_RELOOP",
+            policy_source="stale_reloop",
+            event_type="STALE_RELOOP",
+            msg_key=ledger_key,
+            status_after="assigned",
+            assigned_ts=now_dt.isoformat(),
+            completed_ts="",
+            duration_sec="",
+            sami_id=sami_id,
+        )
+        changed = True
+
+    if changed:
+        if not save_processed_ledger(processed_ledger):
+            log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+            return
+    log(f"STALE_RELOOP_DONE scanned={len(processed_ledger)} stale_candidates={stale_count} changed={1 if changed else 0}", "INFO")
 
 def _add_and_resolve_recipients(mail, addrs, *, kind):
     recips = mail.Recipients
@@ -2869,6 +2998,8 @@ def process_inbox():
     if overrides and overrides.get("completion_cc_addr") and effective_completion_cc != COMPLETION_CC_ADDR:
         log("OVERRIDE_APPLIED key=completion_cc_addr", "INFO")
     global _safe_mode_cache, _safe_mode_inbox, _live_test_override, _jira_followup_folder_error_logged
+    global _mailbox_resolution_ok_last_tick
+    _mailbox_resolution_ok_last_tick = True
     is_safe, safe_reason, override_active = determine_safe_mode(effective_config.get("inbox_folder", ""))
     _safe_mode_cache = (is_safe, safe_reason)
     _safe_mode_inbox = effective_config.get("inbox_folder", "")
@@ -2897,6 +3028,7 @@ def process_inbox():
             if target_store:
                 mailbox = get_store_root_by_display_name(namespace, target_store)
                 if not mailbox:
+                    _mailbox_resolution_ok_last_tick = False
                     log(f"STORE_NOT_FOUND expected_store={target_store}", "ERROR")
                     log(f"TICK_SKIP tick_id={tick_id} reason=STORE_NOT_FOUND", "ERROR")
                     return
@@ -2904,11 +3036,13 @@ def process_inbox():
             else:
                 mailbox = find_mailbox_root_robust(namespace, effective_config["mailbox"])
             if not mailbox:
+                _mailbox_resolution_ok_last_tick = False
                 log(f"TICK_SKIP tick_id={tick_id} reason=MAILBOX_NOT_FOUND", "ERROR")
                 return
             
             inbox, inbox_method = resolve_folder(mailbox, effective_config["inbox_folder"])
             if not inbox:
+                _mailbox_resolution_ok_last_tick = False
                 log(f"FOLDER_NOT_FOUND inbox_folder={effective_config['inbox_folder']} mailbox=(configured)", "ERROR")
                 log(f"FOLDER_RESOLVE_FAILED kind=inbox method={inbox_method} tried_roots=mailbox", "ERROR")
                 log(f"TICK_SKIP tick_id={tick_id} reason=INBOX_FOLDER_NOT_FOUND", "ERROR")
@@ -2929,6 +3063,7 @@ def process_inbox():
                 if processed:
                     break
             if not processed:
+                _mailbox_resolution_ok_last_tick = False
                 log(f"FOLDER_NOT_FOUND processed_folder={effective_config['processed_folder']} mailbox=(configured)", "ERROR")
                 log(f"FOLDER_RESOLVE_FAILED kind=processed method={processed_method} tried_roots={','.join(tried_roots)}", "ERROR")
                 log(f"TICK_SKIP tick_id={tick_id} reason=PROCESSED_FOLDER_NOT_FOUND", "ERROR")
@@ -4403,11 +4538,31 @@ def process_inbox():
         )
 
 def run_job():
-    """Main job: Process inbox + reassign queue"""
+    """Main job: Process inbox + stale reloop + reassign queue"""
+    global _mailbox_resolution_ok_last_tick
     try:
         process_inbox()
     except Exception as e:
         log(f"Error in process_inbox: {e}", "ERROR")
+    # Process stale reloop only when mailbox/folder resolution succeeded this tick.
+    try:
+        if not _mailbox_resolution_ok_last_tick:
+            append_stats(
+                subject="",
+                assigned_to="skipped",
+                sender="system",
+                risk_level="normal",
+                domain_bucket="",
+                action="STALE_SKIP_MAILBOX_UNAVAILABLE",
+                policy_source="stale_reloop",
+                event_type="STALE_SKIP_MAILBOX_UNAVAILABLE",
+                status_after="skipped",
+            )
+            log("STALE_SKIP_MAILBOX_UNAVAILABLE", "WARN")
+        else:
+            process_stale_assignment_reloop()
+    except Exception as e:
+        log(f"Error in process_stale_assignment_reloop: {e}", "ERROR")
     # Process reassign queue independently (never crashes main loop)
     try:
         process_reassign_queue()
