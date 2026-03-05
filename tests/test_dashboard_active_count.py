@@ -439,8 +439,12 @@ class DashboardActiveCountTests(unittest.TestCase):
                 sami_id="SAMI-2CFB3C",
             ),
         ]
+        ledger = {
+            "legacy-b1": {"sami_id": "SAMI-49764E", "assigned_to": "brian.shaw@sa.gov.au"},
+        }
 
-        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+        with patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
+            active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
         self.assertEqual(len(active_rows), 1)
 
     def test_stale_reloop_updates_active_owner(self):
@@ -578,6 +582,41 @@ class DashboardActiveCountTests(unittest.TestCase):
         active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
         self.assertEqual(len(active_rows), 0)
 
+    def test_staff_filter_applies_after_ledger_owner_override(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Image transfer request",
+                event_type="ASSIGNED",
+                assigned_to="john.drousas@sa.gov.au",
+                msg_key="ledger-owner-1",
+                sami_id="SAMI-LEDGEROVR1",
+            ),
+        ]
+        ledger = {
+            "ledger-owner-1": {"sami_id": "SAMI-LEDGEROVR1", "assigned_to": "prav.mudaliar@sa.gov.au"},
+        }
+
+        with patch("dashboard.backend.data_reader.load_json", return_value=(ledger, None)):
+            john_rows = export_active_events(
+                rows,
+                self.DAY,
+                self.DAY,
+                staff_name="John Drousas",
+                reconciled_set=set(),
+            )
+            prav_rows = export_active_events(
+                rows,
+                self.DAY,
+                self.DAY,
+                staff_name="Prav Mudaliar",
+                reconciled_set=set(),
+            )
+
+        self.assertEqual(len(john_rows), 0)
+        self.assertEqual(len(prav_rows), 1)
+        self.assertEqual(prav_rows[0]["Staff Email"], "prav.mudaliar@sa.gov.au")
 
 if __name__ == "__main__":
     unittest.main()

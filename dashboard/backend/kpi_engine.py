@@ -542,8 +542,6 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
             continue
 
         staff_display = _staff_display_name(staff_email)
-        if staff_target and staff_target not in (staff_email, staff_display.lower()):
-            continue
 
         subject = e.get("subject") or ""
         sami_ref = _display_sami_ref(e)
@@ -597,6 +595,10 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
     for row in rows_out:
         sami_ref = (row.get("SAMI Ref") or "").strip().upper()
         if not sami_ref:
+            owner_email = (row.get("Staff Email") or "").strip().lower()
+            owner_display = _staff_display_name(owner_email)
+            if staff_target and staff_target not in (owner_email, owner_display.lower()):
+                continue
             filtered_rows.append(row)
             continue
         entry = ledger_by_sami.get(sami_ref)
@@ -610,6 +612,8 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
             continue
         row["Staff Email"] = assigned_to_norm
         row["Staff"] = _staff_display_name(assigned_to_norm)
+        if staff_target and staff_target not in (assigned_to_norm, row["Staff"].lower()):
+            continue
         filtered_rows.append(row)
 
     rows_out = filtered_rows
