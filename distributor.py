@@ -1690,6 +1690,23 @@ def hib_contains_16110(msg):
         return True
     return False
 
+
+def hib_contains_16111(msg):
+    """Check if HIB message contains '16111' in subject or body (best-effort)"""
+    try:
+        subject = getattr(msg, "Subject", "") or ""
+    except Exception:
+        subject = ""
+    if "16111" in subject:
+        return True
+    try:
+        body = (getattr(msg, "Body", "") or "")[:4000]
+    except Exception:
+        body = ""
+    if "16111" in body:
+        return True
+    return False
+
 # ==================== FILE OPERATIONS ====================
 def get_staff_list():
     """Load staff list from file, preferring staff.json over staff.txt.
@@ -3429,7 +3446,9 @@ def process_inbox():
                             skipped_count += 1
                             continue
 
-                    if is_hib_notification(msg):
+                    hib_notification = is_hib_notification(msg)
+                    hib_force_16111 = hib_notification and hib_contains_16111(msg)
+                    if hib_notification and (domain_bucket != "applications_direct" or hib_force_16111):
                         subject_prefix = re.sub(r"\d", "X", subject or "")[:60]
                         log(f"HIB_MOVE msg_id={msg_id} sender={sender_email} subject_prefix={subject_prefix}", "INFO")
                         hib_moved = False
@@ -3678,7 +3697,7 @@ def process_inbox():
                         append_stats(subject, "applications_direct", sender_email, "normal", domain_bucket, apps_action, policy_source)
                         try:
                             msg.UnRead = False
-                            msg.Move(processed)
+                            msg.Move(hib_folder)
                         except Exception as e:
                             log(f"MOVE_FAIL kind=applications_direct error={e}", "ERROR")
                             errors_count += 1

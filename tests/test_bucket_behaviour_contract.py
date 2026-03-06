@@ -190,14 +190,16 @@ class BucketBehaviourContractTests(unittest.TestCase):
             "hib_noise": {},
         }
 
-    def _build_hot_cfg(self, buckets):
+    def _build_hot_cfg(self, buckets, *, apps_team_recipients=None):
+        if apps_team_recipients is None:
+            apps_team_recipients = ["apps.team@sa.gov.au"]
         return {
             "staff": {
                 "staff": ["staff.one@sa.gov.au"],
                 "off_rotation": [],
                 "leave": [],
             },
-            "apps_team": {"recipients": ["apps.team@sa.gov.au"]},
+            "apps_team": {"recipients": list(apps_team_recipients)},
             "manager_config": {"recipients": ["manager.review@sa.gov.au"]},
             "system_buckets": buckets,
         }
@@ -241,7 +243,18 @@ class BucketBehaviourContractTests(unittest.TestCase):
 
         return _resolve_folder
 
-    def _run_single_message(self, sender, subject, *, bucket_overlay=None, include_system_notification=True):
+    def _run_single_message(
+        self,
+        sender,
+        subject,
+        *,
+        bucket_overlay=None,
+        include_system_notification=True,
+        apps_team_recipients=None,
+        hib_notification=False,
+        hib_contains_16110=False,
+        hib_contains_16111=False,
+    ):
         observed = {
             "stats": [],
             "forwards": [],
@@ -256,7 +269,7 @@ class BucketBehaviourContractTests(unittest.TestCase):
         if bucket_overlay:
             for key, value in bucket_overlay.items():
                 buckets[key] = value
-        hot_cfg = self._build_hot_cfg(buckets)
+        hot_cfg = self._build_hot_cfg(buckets, apps_team_recipients=apps_team_recipients)
         folders = self._make_folders(observed, include_system_notification=include_system_notification)
         mailbox = folders["mailbox"]
         inbox = folders["inbox"]
@@ -306,8 +319,9 @@ class BucketBehaviourContractTests(unittest.TestCase):
             patch.object(distributor, "inject_completion_hotlink", side_effect=_inject_completion_hotlink),
             patch.object(distributor, "send_manager_hold_notification", side_effect=_send_manager_hold_notification),
             patch.object(distributor, "detect_risk", return_value=("normal", None)),
-            patch.object(distributor, "is_hib_notification", return_value=False),
-            patch.object(distributor, "hib_contains_16110", return_value=False),
+            patch.object(distributor, "is_hib_notification", return_value=hib_notification),
+            patch.object(distributor, "hib_contains_16110", return_value=hib_contains_16110),
+            patch.object(distributor, "hib_contains_16111", return_value=hib_contains_16111),
             patch.object(distributor, "is_jira_candidate", return_value=False),
             patch.object(distributor, "is_jira_comment_email", return_value=False),
             patch.object(distributor, "is_staff_completed_confirmation", return_value=False),
@@ -377,7 +391,7 @@ class BucketBehaviourContractTests(unittest.TestCase):
         self.assertEqual(observed["get_next_staff_calls"], 0)
         self.assertEqual(observed["hotlink_calls"], 0)
         self.assertEqual(observed["send_calls"], 1)
-        self.assertEqual(observed["moves"], ["Transfer Bot Test"])
+        self.assertEqual(observed["moves"], ["04_HIB"])
         self.assertEqual(len(observed["forwards"]), 1)
         self.assertEqual(observed["forwards"][0].Recipients.values(), ["apps.team@sa.gov.au"])
         self.assertFalse(any(record.get("event_type") == "ASSIGNED" for record in observed["stats"]))
@@ -385,6 +399,52 @@ class BucketBehaviourContractTests(unittest.TestCase):
         self.assertEqual(row["domain_bucket"], "applications_direct")
         self.assertEqual(row["assigned_to"], "applications_direct")
         self.assertTrue(row["action"].startswith("APPS_FORWARD_ONLY"))
+
+    def test_applications_direct_non_16111_beats_generic_hib_and_forwards_all_apps_recipients(self):
+        recipients = [
+            "apps@sa.gov.au",
+            "kate.cook@sa.gov.au",
+            "tony.penna@sa.gov.au",
+            "brian.shaw@sa.gov.au",
+        ]
+        observed = self._run_single_message(
+            "pas.health@sa.gov.au",
+            "Applications direct item",
+            apps_team_recipients=recipients,
+            hib_notification=True,
+            hib_contains_16111=False,
+        )
+
+        self.assertEqual(observed["get_next_staff_calls"], 0)
+        self.assertEqual(observed["hotlink_calls"], 0)
+        self.assertEqual(observed["send_calls"], 1)
+        self.assertEqual(observed["moves"], ["04_HIB"])
+        self.assertEqual(len(observed["forwards"]), 1)
+        self.assertEqual(observed["forwards"][0].Recipients.values(), recipients)
+        self.assertFalse(any(record.get("event_type") == "ASSIGNED" for record in observed["stats"]))
+        row = observed["stats"][-1]
+        self.assertEqual(row["domain_bucket"], "applications_direct")
+        self.assertEqual(row["assigned_to"], "applications_direct")
+        self.assertTrue(row["action"].startswith("APPS_FORWARD_ONLY"))
+
+    def test_applications_direct_16111_still_routes_hib_only(self):
+        observed = self._run_single_message(
+            "pas.health@sa.gov.au",
+            "ERROR: 16111 HIB alert",
+            hib_notification=True,
+            hib_contains_16111=True,
+        )
+
+        self.assertEqual(observed["get_next_staff_calls"], 0)
+        self.assertEqual(observed["hotlink_calls"], 0)
+        self.assertEqual(observed["send_calls"], 0)
+        self.assertEqual(observed["moves"], ["04_HIB"])
+        self.assertEqual(len(observed["forwards"]), 0)
+        self.assertFalse(any(record.get("event_type") == "ASSIGNED" for record in observed["stats"]))
+        row = observed["stats"][-1]
+        self.assertEqual(row["domain_bucket"], "hib")
+        self.assertEqual(row["assigned_to"], "hib")
+        self.assertEqual(row["action"], "ROUTE_HIB")
 
     def test_internal_non_staff_routes_manager_review_without_assignment(self):
         observed = self._run_single_message("nonstaff@sa.gov.au", "Internal non-staff request")
