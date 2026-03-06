@@ -83,6 +83,20 @@ COMPLETION_FOOTER_TEMPLATE = (
 )
 HEARTBEAT_INTERVAL_SECONDS = 300
 RELOOP_PROTECTION_WINDOW = 60
+STALE_RELOOP_KNOWN_STAFF_ALLOWLIST = (
+    "christina.carroll@sa.gov.au",
+    "hannah.cutting@sa.gov.au",
+    "deepak.devarapalli@sa.gov.au",
+    "john.drousas@sa.gov.au",
+    "debbie.fowell@sa.gov.au",
+    "ajumeet.kaur@sa.gov.au",
+    "prav.mudaliar@sa.gov.au",
+    "kerry.murphy@sa.gov.au",
+    "muiru.mutuota@sa.gov.au",
+    "gioia.perre@sa.gov.au",
+    "craig.ravlich@sa.gov.au",
+    "brian.shaw@sa.gov.au",
+)
 JIRA_FOLLOW_UP_FOLDER_PATH = "Inbox/06_JIRA_FOLLOW_UP"
 JIRA_FOLLOW_UP_SUBJECT_PREFIX = "[JIRA FOLLOW-UP] "
 JIRA_FOLLOW_UP_BANNER = (
@@ -1430,6 +1444,7 @@ def process_stale_assignment_reloop():
         return False
 
     stale_threshold = timedelta(hours=6)
+    item_not_found_backoff = timedelta(hours=1)
     max_reloops = 3
     now_dt = datetime.now()
     changed = False
@@ -1439,11 +1454,13 @@ def process_stale_assignment_reloop():
         "bot", "completed", "error", "hib", "hold", "manager_review",
         "non_actionable", "quarantined", "skipped", "system_notification", "applications_direct"
     }
-    staff_set = set(s.strip().lower() for s in staff_list)
+    known_staff_set = _get_known_staff_for_stale_reloop()
 
     for ledger_key in sorted(processed_ledger.keys()):
         entry = processed_ledger.get(ledger_key)
         if not isinstance(entry, dict):
+            continue
+        if ledger_key.endswith("::JIRA_FOLLOWUP") or str(entry.get("route") or "").strip() == "JIRA_FOLLOWUP":
             continue
 
         assigned_to = str(entry.get("assigned_to") or "").strip().lower()
@@ -1451,7 +1468,7 @@ def process_stale_assignment_reloop():
             continue
         if assigned_to in non_staff_assignees:
             continue
-        if assigned_to not in staff_set:
+        if assigned_to not in known_staff_set:
             continue
         if entry.get("completed_at"):
             continue
@@ -1465,6 +1482,9 @@ def process_stale_assignment_reloop():
         if not last_touch:
             continue
         if (now_dt - last_touch) < stale_threshold:
+            continue
+        item_not_found_dt = _parse_iso_safe(entry.get("stale_item_not_found_at"))
+        if item_not_found_dt and (now_dt - item_not_found_dt) < item_not_found_backoff:
             continue
 
         stale_count += 1
@@ -1500,7 +1520,15 @@ def process_stale_assignment_reloop():
 
         stale_item = _resolve_mailitem_from_ledger_entry(namespace, entry)
         if stale_item is None:
+            current_not_found = entry.get("stale_item_not_found_count", 0)
+            try:
+                current_not_found = int(current_not_found)
+            except Exception:
+                current_not_found = 0
+            entry["stale_item_not_found_at"] = now_dt.isoformat()
+            entry["stale_item_not_found_count"] = current_not_found + 1
             log(f"STALE_RELOOP_ITEM_NOT_FOUND key={ledger_key}", "WARN")
+            changed = True
             continue
         _sb_ok, _sb_actual = check_msg_mailbox_store(stale_item, target_store)
         if not _sb_ok:
@@ -1690,7 +1718,6 @@ def hib_contains_16110(msg):
         return True
     return False
 
-
 def hib_contains_16111(msg):
     """Check if HIB message contains '16111' in subject or body (best-effort)"""
     try:
@@ -1760,6 +1787,14 @@ def get_staff_list():
     except Exception as e:
         log(f"STAFF_FILE_ERROR path={STAFF_PATH} error={e}", "ERROR")
         return []
+
+def _get_known_staff_for_stale_reloop():
+    """Return legitimate stale-reloop assignees regardless of rotation status."""
+    return {
+        email
+        for email in (normalize_email(item) for item in STALE_RELOOP_KNOWN_STAFF_ALLOWLIST)
+        if email
+    }
 
 def find_child_folder(parent_folder, child_name):
     """Return child folder by name or None"""
