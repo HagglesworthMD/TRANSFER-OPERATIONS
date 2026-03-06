@@ -512,6 +512,16 @@ def _resolve_sami_group_key(e: dict) -> str:
     return _extract_sami_ref((e.get("subject") or "").strip()).lower()
 
 
+def _active_identity_key(e: dict) -> str:
+    sami_ref = _display_sami_ref(e)
+    if sami_ref:
+        return sami_ref
+    msg_key = (e.get("msg_key") or "").strip().lower()
+    if msg_key:
+        return f"msg:{msg_key}"
+    return ""
+
+
 def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: str | None = None,
                                   date_start: str | None = None) -> list[dict]:
     """Return likely-open ticket identities as of *date_end* before reconciliation filtering."""
@@ -534,6 +544,21 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
         sami_key = _resolve_sami_group_key(e)
         if sami_key:
             completed_sami_keys.add(sami_key)
+
+    manual_release_by_identity_ts: dict[str, datetime | None] = {}
+    for e in events:
+        event_type = (e.get("event_type") or "").strip().upper()
+        if event_type != "MANUAL_STALE_RELEASE":
+            continue
+        if (e.get("date") or "") > date_end:
+            continue
+        identity = _active_identity_key(e)
+        if not identity:
+            continue
+        current_ts = e.get("event_ts")
+        previous_ts = manual_release_by_identity_ts.get(identity)
+        if previous_ts is None or (current_ts and current_ts >= previous_ts):
+            manual_release_by_identity_ts[identity] = current_ts
 
     latest_by_identity: dict[str, dict] = {}
     for e in candidates:
@@ -564,6 +589,10 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
             continue
 
         identity = sami_ref or (f"msg:{msg_key}" if msg_key else f"{e.get('date','')}|{e.get('time','')}|{staff_email}|{subject[:40]}")
+        manual_release_ts = manual_release_by_identity_ts.get(identity)
+        if manual_release_ts is not None:
+            if current_ts is None or current_ts <= manual_release_ts:
+                continue
 
         existing = latest_by_identity.get(identity)
         if existing is not None:

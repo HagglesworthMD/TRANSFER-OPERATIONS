@@ -260,6 +260,7 @@ const ActivityFeed = {
 
         const htmlRows = rows.map((item, idx) => {
             const sami = (item.sami_ref || '').trim();
+            const msgKey = (item.msg_key || '').trim();
             const samiHtml = sami
                 ? `<span class="ref-badge" data-ref="${this._esc(sami)}" title="Click to copy ${this._esc(sami)}">${this._esc(sami)}</span>`
                 : '';
@@ -272,6 +273,9 @@ const ActivityFeed = {
             const reassignBtn = sami
                 ? `<button class="btn-reassign" data-idx="${idx}" title="Reassign ticket">Reassign</button>`
                 : '';
+            const manualStaleBtn = (msgKey || sami)
+                ? `<button class="btn-manual-stale" data-idx="${idx}" title="Return to Inbox unread for reassignment">Declare stale</button>`
+                : `<button class="btn-manual-stale" data-idx="${idx}" disabled title="No stable job identity available">Declare stale</button>`;
 
             return `<tr>
                 <td>${this._esc(item.date)}</td>
@@ -282,13 +286,14 @@ const ActivityFeed = {
                 <td>${this._esc(item.domain)}</td>
                 <td>${this._esc(item.risk_level)}</td>
                 <td title="${this._esc(item.subject)}">${subjectHtml}</td>
-                <td>${reconcileBtn} ${reassignBtn}</td>
+                <td>${reconcileBtn} ${reassignBtn} ${manualStaleBtn}</td>
             </tr>`;
         });
 
         tbody.innerHTML = htmlRows.join('');
         this._wireRefCopy(tbody);
         this._wireReconcileButtons(tbody, rows);
+        this._wireManualStaleButtons(tbody, rows);
         this._wireReassignButtons(tbody, rows);
     },
 
@@ -624,6 +629,34 @@ const ActivityFeed = {
                 const samiRef = (item.sami_ref || '').trim();
                 if (!samiRef) return;
                 await this._openReassignDialog(samiRef, (item.staff_email || item.staff || '').trim());
+            });
+        });
+    },
+
+    _wireManualStaleButtons(container, rows) {
+        container.querySelectorAll('.btn-manual-stale').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const idx = parseInt(btn.dataset.idx, 10);
+                const item = rows[idx];
+                if (!item) return;
+                const msgKey = (item.msg_key || '').trim();
+                const samiRef = (item.sami_ref || '').trim();
+                if (!msgKey && !samiRef) return;
+                if (!window.confirm('Return this job to Inbox unread for reassignment?')) {
+                    return;
+                }
+
+                const originalLabel = btn.textContent;
+                btn.disabled = true;
+                btn.textContent = 'Queued...';
+                try {
+                    await DashboardAPI.manualStale(msgKey, samiRef, '');
+                } catch (err) {
+                    alert('Failed to queue stale release: ' + err.message);
+                    btn.disabled = false;
+                    btn.textContent = originalLabel;
+                }
             });
         });
     },

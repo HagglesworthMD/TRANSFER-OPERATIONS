@@ -62,6 +62,7 @@ FILES = {
 PROCESSED_LEDGER_PATH = "processed_ledger.json"
 POISON_COUNTS_PATH = "poison_counts.json"
 REASSIGN_QUEUE_PATH = "reassign_queue.json"
+MANUAL_STALE_REQUESTS_PATH = "manual_stale_requests.json"
 LOCK_PATH = "bot.lock"
 SETTINGS_OVERRIDES_PATH = "settings_overrides.json"
 DOMAIN_POLICY_PATH = "domain_policy.json"
@@ -97,6 +98,10 @@ STALE_RELOOP_KNOWN_STAFF_ALLOWLIST = (
     "craig.ravlich@sa.gov.au",
     "brian.shaw@sa.gov.au",
 )
+STALE_RELOOP_NON_STAFF_ASSIGNEES = {
+    "bot", "completed", "error", "hib", "hold", "manager_review",
+    "non_actionable", "quarantined", "skipped", "system_notification", "applications_direct"
+}
 JIRA_FOLLOW_UP_FOLDER_PATH = "Inbox/06_JIRA_FOLLOW_UP"
 JIRA_FOLLOW_UP_SUBJECT_PREFIX = "[JIRA FOLLOW-UP] "
 JIRA_FOLLOW_UP_BANNER = (
@@ -1426,6 +1431,88 @@ def _deterministic_next_staff_after_owner(old_assignee, staff_list):
         return normalized[(idx + 1) % len(normalized)]
     return normalized[0]
 
+
+def _latest_stale_touch(entry):
+    if not isinstance(entry, dict):
+        return None
+    ts_dt = _parse_iso_safe(entry.get("ts"))
+    reloop_dt = _parse_iso_safe(entry.get("stale_last_reloop_at"))
+    if ts_dt and reloop_dt:
+        return reloop_dt if reloop_dt >= ts_dt else ts_dt
+    return reloop_dt or ts_dt
+
+
+def _classify_manual_stale_target(entry, known_staff_set):
+    assigned_to = str((entry or {}).get("assigned_to") or "").strip().lower()
+    if entry.get("completed_at"):
+        return "completed", assigned_to
+    if not assigned_to:
+        return "not_active", assigned_to
+    if assigned_to in STALE_RELOOP_NON_STAFF_ASSIGNEES:
+        return "not_eligible", assigned_to
+    if assigned_to not in known_staff_set:
+        return "not_eligible", assigned_to
+    return "eligible", assigned_to
+
+
+def _find_manual_stale_target_entry(processed_ledger, known_staff_set, msg_key="", sami_id=""):
+    if not isinstance(processed_ledger, dict):
+        return None, None
+
+    msg_key_norm = str(msg_key or "").strip().lower()
+    if msg_key_norm:
+        for ledger_key, entry in processed_ledger.items():
+            if str(ledger_key or "").strip().lower() == msg_key_norm:
+                return ledger_key, entry
+
+    sami_norm = str(sami_id or "").strip().upper()
+    if not sami_norm:
+        return None, None
+
+    best_key = None
+    best_entry = None
+    best_touch = None
+    for ledger_key, entry in processed_ledger.items():
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("sami_id") or "").strip().upper() != sami_norm:
+            continue
+        status, _assigned_to = _classify_manual_stale_target(entry, known_staff_set)
+        if status != "eligible":
+            continue
+        current_touch = _latest_stale_touch(entry)
+        if best_key is None:
+            best_key = ledger_key
+            best_entry = entry
+            best_touch = current_touch
+            continue
+        if current_touch is None:
+            continue
+        if best_touch is None or current_touch >= best_touch:
+            best_key = ledger_key
+            best_entry = entry
+            best_touch = current_touch
+    return best_key, best_entry
+
+
+def _append_manual_stale_audit(event_type, *, entry, sender, status_after, msg_key, now_dt):
+    append_stats(
+        subject=f"{event_type} key={msg_key}",
+        assigned_to="unassigned" if event_type == "MANUAL_STALE_RELEASE" else "skipped",
+        sender=sender or "dashboard_admin",
+        risk_level=(entry or {}).get("risk", "normal") or "normal",
+        domain_bucket="",
+        action=event_type,
+        policy_source="dashboard",
+        event_type=event_type,
+        msg_key=msg_key or "",
+        status_after=status_after,
+        assigned_ts=now_dt.isoformat(),
+        completed_ts="",
+        duration_sec="",
+        sami_id=str((entry or {}).get("sami_id") or "").strip(),
+    )
+
 def process_stale_assignment_reloop():
     """Move stale assignments back to inbox and mark unread for requeue."""
     staff_list = sorted(get_staff_list())
@@ -1450,10 +1537,6 @@ def process_stale_assignment_reloop():
     changed = False
     stale_count = 0
 
-    non_staff_assignees = {
-        "bot", "completed", "error", "hib", "hold", "manager_review",
-        "non_actionable", "quarantined", "skipped", "system_notification", "applications_direct"
-    }
     known_staff_set = _get_known_staff_for_stale_reloop()
 
     for ledger_key in sorted(processed_ledger.keys()):
@@ -1466,19 +1549,14 @@ def process_stale_assignment_reloop():
         assigned_to = str(entry.get("assigned_to") or "").strip().lower()
         if not assigned_to:
             continue
-        if assigned_to in non_staff_assignees:
+        if assigned_to in STALE_RELOOP_NON_STAFF_ASSIGNEES:
             continue
         if assigned_to not in known_staff_set:
             continue
         if entry.get("completed_at"):
             continue
 
-        ts_dt = _parse_iso_safe(entry.get("ts"))
-        reloop_dt = _parse_iso_safe(entry.get("stale_last_reloop_at"))
-        if ts_dt and reloop_dt:
-            last_touch = reloop_dt if reloop_dt >= ts_dt else ts_dt
-        else:
-            last_touch = reloop_dt or ts_dt
+        last_touch = _latest_stale_touch(entry)
         if not last_touch:
             continue
         if (now_dt - last_touch) < stale_threshold:
@@ -1569,6 +1647,174 @@ def process_stale_assignment_reloop():
             return True
     log(f"STALE_RELOOP_DONE scanned={len(processed_ledger)} stale_candidates={stale_count} changed={changed}", "INFO")
     return True
+
+
+def process_manual_stale_requests():
+    """Process one-shot manual stale release requests written by the dashboard."""
+    if not os.path.exists(MANUAL_STALE_REQUESTS_PATH):
+        return
+
+    queue = safe_load_json(MANUAL_STALE_REQUESTS_PATH, {}, state_name="manual_stale_requests")
+    if not queue:
+        return
+    if not isinstance(queue, dict):
+        log("MANUAL_STALE_QUEUE_INVALID reason=not_object", "WARN")
+        return
+
+    namespace, inbox, target_store = _resolve_stale_reloop_runtime()
+    if not namespace or not inbox:
+        log(f"MANUAL_STALE_SKIP reason=mailbox_unavailable pending={len(queue)}", "WARN")
+        return
+
+    processed_ledger = load_processed_ledger()
+    if not isinstance(processed_ledger, dict):
+        log("MANUAL_STALE_SKIP reason=ledger_unavailable", "WARN")
+        return
+
+    known_staff_set = _get_known_staff_for_stale_reloop()
+    remaining = dict(queue)
+    pending_success_audits = []
+    changed = False
+    released = 0
+    skipped = 0
+
+    for request_key in sorted(queue.keys()):
+        request = queue.get(request_key)
+        now_dt = datetime.now()
+        if not isinstance(request, dict):
+            skipped += 1
+            remaining.pop(request_key, None)
+            _append_manual_stale_audit(
+                "MANUAL_STALE_RELEASE_SKIPPED",
+                entry={},
+                sender="dashboard_admin",
+                status_after="invalid_request",
+                msg_key="",
+                now_dt=now_dt,
+            )
+            log(f"MANUAL_STALE_SKIP request_key={request_key} reason=invalid_request", "WARN")
+            continue
+
+        msg_key = str(request.get("msg_key") or "").strip()
+        sami_id = str(request.get("sami_id") or "").strip()
+        requested_by = str(request.get("requested_by") or "dashboard_admin").strip() or "dashboard_admin"
+        request_id = str(request.get("request_id") or request_key)
+        ledger_key, entry = _find_manual_stale_target_entry(
+            processed_ledger,
+            known_staff_set,
+            msg_key=msg_key,
+            sami_id=sami_id,
+        )
+        if not ledger_key or not isinstance(entry, dict):
+            skipped += 1
+            remaining.pop(request_key, None)
+            _append_manual_stale_audit(
+                "MANUAL_STALE_RELEASE_SKIPPED",
+                entry={},
+                sender=requested_by,
+                status_after="not_found",
+                msg_key=msg_key,
+                now_dt=now_dt,
+            )
+            log(f"MANUAL_STALE_SKIP request_id={request_id} reason=not_found key={msg_key or sami_id}", "WARN")
+            continue
+
+        status, assigned_to = _classify_manual_stale_target(entry, known_staff_set)
+        if status != "eligible":
+            skipped += 1
+            remaining.pop(request_key, None)
+            _append_manual_stale_audit(
+                "MANUAL_STALE_RELEASE_SKIPPED",
+                entry=entry,
+                sender=requested_by,
+                status_after=status,
+                msg_key=ledger_key,
+                now_dt=now_dt,
+            )
+            log(f"MANUAL_STALE_SKIP request_id={request_id} key={ledger_key} reason={status}", "INFO")
+            continue
+
+        stale_item = _resolve_mailitem_from_ledger_entry(namespace, entry)
+        if stale_item is None:
+            skipped += 1
+            remaining.pop(request_key, None)
+            _append_manual_stale_audit(
+                "MANUAL_STALE_RELEASE_SKIPPED",
+                entry=entry,
+                sender=requested_by,
+                status_after="item_not_found",
+                msg_key=ledger_key,
+                now_dt=now_dt,
+            )
+            log(f"MANUAL_STALE_SKIP request_id={request_id} key={ledger_key} reason=item_not_found", "WARN")
+            continue
+
+        _sb_ok, _sb_actual = check_msg_mailbox_store(stale_item, target_store)
+        if not _sb_ok:
+            skipped += 1
+            remaining.pop(request_key, None)
+            _append_manual_stale_audit(
+                "MANUAL_STALE_RELEASE_SKIPPED",
+                entry=entry,
+                sender=requested_by,
+                status_after="wrong_mailbox",
+                msg_key=ledger_key,
+                now_dt=now_dt,
+            )
+            log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+            continue
+
+        try:
+            stale_item.UnRead = True
+            stale_item.Move(inbox)
+        except Exception as e:
+            log(f"MANUAL_STALE_MOVE_FAIL request_id={request_id} key={ledger_key} error={e}", "ERROR")
+            continue
+
+        entry["stale_last_owner"] = assigned_to
+        entry["assigned_to"] = ""
+        entry["stale_last_reloop_at"] = now_dt.isoformat()
+        processed_ledger[ledger_key] = entry
+        pending_success_audits.append({
+            "request_id": request_id,
+            "requested_by": requested_by,
+            "ledger_key": ledger_key,
+            "assigned_to": assigned_to,
+            "entry": dict(entry),
+            "now_dt": now_dt,
+        })
+        remaining.pop(request_key, None)
+        changed = True
+        released += 1
+
+    if changed and not save_processed_ledger(processed_ledger):
+        log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
+        log(
+            f"MANUAL_STALE_ABORT reason=ledger_save_failed requested={len(queue)} released={released} skipped={skipped}",
+            "WARN",
+        )
+        return
+
+    for success in pending_success_audits:
+        _append_manual_stale_audit(
+            "MANUAL_STALE_RELEASE",
+            entry=success["entry"],
+            sender=success["requested_by"],
+            status_after="relooped",
+            msg_key=success["ledger_key"],
+            now_dt=success["now_dt"],
+        )
+        log(
+            f"MANUAL_STALE_RELEASE_OK request_id={success['request_id']} key={success['ledger_key']} owner={success['assigned_to']}",
+            "INFO",
+        )
+
+    if not atomic_write_json(MANUAL_STALE_REQUESTS_PATH, remaining, state_name="manual_stale_requests"):
+        return
+    log(
+        f"MANUAL_STALE_DONE requested={len(queue)} released={released} skipped={skipped} remaining={len(remaining)}",
+        "INFO",
+    )
 
 def _add_and_resolve_recipients(mail, addrs, *, kind):
     recips = mail.Recipients
@@ -4704,7 +4950,7 @@ def process_inbox():
         )
 
 def run_job():
-    """Main job: Process inbox + stale reloop + reassign queue"""
+    """Main job: Process inbox + stale reloop + manual stale queue + reassign queue"""
     stale_mailbox_ok = True
     # Run stale pass first so reloop guard can suppress same-tick reassignment.
     try:
@@ -4725,6 +4971,11 @@ def run_job():
             status_after="skipped",
         )
         log("STALE_SKIP_MAILBOX_UNAVAILABLE", "WARN")
+
+    try:
+        process_manual_stale_requests()
+    except Exception as e:
+        log(f"Error in process_manual_stale_requests: {e}", "ERROR")
 
     try:
         process_inbox()

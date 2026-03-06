@@ -582,6 +582,52 @@ class DashboardActiveCountTests(unittest.TestCase):
         active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
         self.assertEqual(len(active_rows), 0)
 
+    def test_manual_stale_release_closes_non_sami_active_row_by_identity(self):
+        rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Image transfer request",
+                event_type="ASSIGNED",
+                assigned_to="brian.shaw@sa.gov.au",
+                msg_key="store:abc|entry:a1",
+            ),
+            self._row(
+                date=self.DAY,
+                time="09:30:00",
+                subject="MANUAL_STALE_RELEASE key=store:abc|entry:a1",
+                event_type="MANUAL_STALE_RELEASE",
+                assigned_to="unassigned",
+                sender="dashboard_admin",
+                msg_key="store:abc|entry:a1",
+                action="MANUAL_STALE_RELEASE",
+                assigned_ts=f"{self.DAY}T09:30:00",
+            ),
+        ]
+
+        active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
+        staff_filtered = export_active_events(
+            rows,
+            self.DAY,
+            self.DAY,
+            staff_name="Brian Shaw",
+            reconciled_set=set(),
+        )
+        payload = compute_dashboard(
+            rows,
+            roster_state=None,
+            settings=None,
+            staff_list=["brian.shaw@sa.gov.au"],
+            hib_state=None,
+            date_start=self.DAY,
+            date_end=self.DAY,
+            reconciled_set=set(),
+        )
+
+        self.assertEqual(len(active_rows), 0)
+        self.assertEqual(len(staff_filtered), 0)
+        self.assertEqual(payload["summary"]["active_count"], 0)
+
     def test_staff_filter_applies_after_ledger_owner_override(self):
         rows = [
             self._row(

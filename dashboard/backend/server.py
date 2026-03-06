@@ -1480,6 +1480,67 @@ async def reassign_ticket(request: Request):
     return {"ok": True, "request_id": entry["request_id"]}
 
 
+def _manual_stale_request_key(msg_key: str, sami_id: str) -> str:
+    msg_key_norm = (msg_key or "").strip().lower()
+    if msg_key_norm:
+        return f"msg:{msg_key_norm}"
+    sami_ref = _normalize_sami_lookup(sami_id)
+    if sami_ref:
+        return f"sami:{sami_ref}"
+    return ""
+
+
+@app.post("/api/manual-stale")
+async def manual_stale(request: Request):
+    """Queue a one-shot manual stale release for the bot to process on its next tick."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Body must be a JSON object")
+
+    msg_key = (body.get("msg_key") or "").strip()
+    sami_id = _normalize_sami_lookup(body.get("sami_id") or "")
+    request_key = _manual_stale_request_key(msg_key, sami_id)
+    if not request_key:
+        raise HTTPException(status_code=400, detail="msg_key or sami_id is required")
+
+    from datetime import datetime as _dt, timezone as _tz
+
+    request_id = (
+        f"manual-stale-{_dt.now(_tz.utc).strftime('%Y%m%dT%H%M%S')}-"
+        f"{re.sub(r'[^A-Za-z0-9_-]+', '-', request_key)}"
+    )
+    entry = {
+        "request_id": request_id,
+        "request_key": request_key,
+        "msg_key": msg_key,
+        "sami_id": sami_id,
+        "reason": (body.get("reason") or "").strip(),
+        "requested_by": (body.get("requested_by") or "dashboard_admin").strip() or "dashboard_admin",
+        "requested_ts": _dt.now(_tz.utc).isoformat(),
+    }
+
+    queue_path = config.MANUAL_STALE_REQUESTS_JSON
+    existing, err = _safe_load_json_direct(queue_path)
+    if err and not err.startswith("Missing file:"):
+        raise HTTPException(status_code=500, detail=f"Failed to load manual stale queue: {err}")
+    if existing is None:
+        queue = {}
+    elif isinstance(existing, dict):
+        queue = dict(existing)
+    else:
+        raise HTTPException(status_code=500, detail="manual_stale_requests.json must be a JSON object")
+
+    queue[request_key] = entry
+    ok, err = _atomic_write_json(queue_path, queue)
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Failed to write manual stale queue: {err}")
+
+    return {"ok": True, "request_id": request_id, "request_key": request_key, "status": "queued"}
+
+
 @app.get("/api/config/domain_policy")
 async def get_domain_policy_config():
     # Canonical merged view used by the Domain Policy & Staff panel.

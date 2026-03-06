@@ -265,4 +265,20 @@ const DashboardAPI = {
         if (!res.ok) throw new Error(data.detail || 'Failed to queue reassignment');
         return data;
     },
+
+    async manualStale(msgKey, samiId, reason) {
+        const res = await fetch(`${this.base}/api/manual-stale`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                msg_key: msgKey || '',
+                sami_id: samiId || '',
+                reason: reason || '',
+                requested_by: 'dashboard_admin',
+            }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Failed to queue manual stale release');
+        return data;
+    },
 };
