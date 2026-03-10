@@ -185,22 +185,30 @@ def _load_system_domains() -> set[str]:
     return _system_notification_domains
 
 
-def _load_processed_ledger_by_sami() -> dict[str, dict]:
+def _load_processed_ledger_indexes() -> tuple[dict[str, dict], dict[str, dict]]:
     from . import data_reader
 
     ledger_path = config.BASE_DIR / "processed_ledger.json"
     data, _ = data_reader.load_json(ledger_path)
     if not isinstance(data, dict):
-        return {}
+        return {}, {}
 
     by_sami: dict[str, dict] = {}
-    for entry in data.values():
+    by_msg_key: dict[str, dict] = {}
+    for ledger_key, entry in data.items():
         if not isinstance(entry, dict):
             continue
         sami_id = (entry.get("sami_id") or "").strip().upper()
-        if not sami_id:
-            continue
-        by_sami[sami_id] = entry
+        if sami_id:
+            by_sami[sami_id] = entry
+        msg_key = str(ledger_key or "").strip().lower()
+        if msg_key:
+            by_msg_key[msg_key] = entry
+    return by_sami, by_msg_key
+
+
+def _load_processed_ledger_by_sami() -> dict[str, dict]:
+    by_sami, _ = _load_processed_ledger_indexes()
     return by_sami
 
 
@@ -532,9 +540,10 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
     ]
 
     staff_target = (staff_name or "").strip().lower()
-    start_cutoff = _parse_ts(f"{date_start}T00:00:00") if date_start else None
+    _ = date_start
 
     completed_sami_keys: set[str] = set()
+    completed_by_identity_ts: dict[str, datetime | None] = {}
     for e in events:
         event_type = (e.get("event_type") or "").strip().upper()
         if event_type not in ("COMPLETED", "FILTER_JONES_COMPLETION", "COMPLETION_SWEEP"):
@@ -544,21 +553,37 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
         sami_key = _resolve_sami_group_key(e)
         if sami_key:
             completed_sami_keys.add(sami_key)
+        identity = _active_identity_key(e)
+        if not identity:
+            continue
+        current_ts = e.get("event_ts")
+        previous_ts = completed_by_identity_ts.get(identity)
+        if previous_ts is None or (current_ts and current_ts >= previous_ts):
+            completed_by_identity_ts[identity] = current_ts
 
     manual_release_by_identity_ts: dict[str, datetime | None] = {}
+    base_event_by_identity: dict[str, dict] = {}
     for e in events:
         event_type = (e.get("event_type") or "").strip().upper()
-        if event_type != "MANUAL_STALE_RELEASE":
-            continue
         if (e.get("date") or "") > date_end:
-            continue
-        assigned_to = (e.get("assigned_to") or "").strip().lower()
-        if _is_staff(assigned_to):
             continue
         identity = _active_identity_key(e)
         if not identity:
             continue
         current_ts = e.get("event_ts")
+        if event_type in ("ASSIGNED", "REASSIGN_MANUAL"):
+            existing_base = base_event_by_identity.get(identity)
+            if existing_base is None:
+                base_event_by_identity[identity] = e
+            else:
+                existing_ts = existing_base.get("event_ts")
+                if existing_ts is None or (current_ts and current_ts >= existing_ts):
+                    base_event_by_identity[identity] = e
+        if event_type != "MANUAL_STALE_RELEASE":
+            continue
+        assigned_to = (e.get("assigned_to") or "").strip().lower()
+        if _is_staff(assigned_to):
+            continue
         previous_ts = manual_release_by_identity_ts.get(identity)
         if previous_ts is None or (current_ts and current_ts >= previous_ts):
             manual_release_by_identity_ts[identity] = current_ts
@@ -582,16 +607,15 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
         if event_type == "STALE_RELOOP" and sami_ref:
             continue
 
-        if start_cutoff:
-            if current_ts and current_ts < start_cutoff:
-                continue
-            if not current_ts and (e.get("date") or "") and (e.get("date") or "") < (date_start or ""):
-                continue
+        identity = sami_ref or (f"msg:{msg_key}" if msg_key else f"{e.get('date','')}|{e.get('time','')}|{staff_email}|{subject[:40]}")
 
         if sami_key and sami_key in completed_sami_keys:
             continue
 
-        identity = sami_ref or (f"msg:{msg_key}" if msg_key else f"{e.get('date','')}|{e.get('time','')}|{staff_email}|{subject[:40]}")
+        completed_identity_ts = completed_by_identity_ts.get(identity)
+        if completed_identity_ts is not None:
+            if current_ts is None or current_ts <= completed_identity_ts:
+                continue
         manual_release_ts = manual_release_by_identity_ts.get(identity)
         if manual_release_ts is not None:
             if current_ts is None or current_ts <= manual_release_ts:
@@ -603,48 +627,50 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
             if prev_ts and current_ts and prev_ts >= current_ts:
                 continue
 
-        sender = (e.get("sender") or "").strip().lower()
+        display_event = e
+        if event_type in ("STALE_RELOOP", "MANUAL_STALE_RELEASE"):
+            display_event = base_event_by_identity.get(identity) or e
+
+        sender = (display_event.get("sender") or "").strip().lower()
         domain = sender.split("@", 1)[1] if "@" in sender else ""
 
         latest_by_identity[identity] = {
-            "Date": e.get("date") or "",
-            "Time": e.get("time") or "",
+            "Date": display_event.get("date") or "",
+            "Time": display_event.get("time") or "",
             "SAMI Ref": sami_ref,
             "Staff": staff_display,
             "Staff Email": staff_email,
             "Sender": sender,
             "Domain": domain,
-            "Risk Level": e.get("risk_level") or "",
-            "Subject": subject,
+            "Risk Level": display_event.get("risk_level") or "",
+            "Subject": display_event.get("subject") or subject,
             "Message Key": msg_key,
             "Identity": identity,
             "event_ts": current_ts,
         }
 
     rows_out = list(latest_by_identity.values())
-    ledger_by_sami = _load_processed_ledger_by_sami()
+    ledger_by_sami, ledger_by_msg_key = _load_processed_ledger_indexes()
     filtered_rows: list[dict] = []
     for row in rows_out:
         sami_ref = (row.get("SAMI Ref") or "").strip().upper()
-        if not sami_ref:
-            owner_email = (row.get("Staff Email") or "").strip().lower()
-            owner_display = _staff_display_name(owner_email)
-            if staff_target and staff_target not in (owner_email, owner_display.lower()):
+        msg_key = (row.get("Message Key") or "").strip().lower()
+        entry = ledger_by_sami.get(sami_ref) if sami_ref else ledger_by_msg_key.get(msg_key)
+        if entry:
+            assigned_to = entry.get("assigned_to")
+            if assigned_to is None:
                 continue
-            filtered_rows.append(row)
+            assigned_to_norm = str(assigned_to).strip().lower()
+            if assigned_to_norm in ("", "completed") or entry.get("completed_at"):
+                continue
+            row["Staff Email"] = assigned_to_norm
+            row["Staff"] = _staff_display_name(assigned_to_norm)
+        elif sami_ref:
             continue
-        entry = ledger_by_sami.get(sami_ref)
-        if not entry:
-            continue
-        assigned_to = entry.get("assigned_to")
-        if assigned_to is None:
-            continue
-        assigned_to_norm = str(assigned_to).strip().lower()
-        if assigned_to_norm in ("", "completed"):
-            continue
-        row["Staff Email"] = assigned_to_norm
-        row["Staff"] = _staff_display_name(assigned_to_norm)
-        if staff_target and staff_target not in (assigned_to_norm, row["Staff"].lower()):
+
+        owner_email = (row.get("Staff Email") or "").strip().lower()
+        owner_display = _staff_display_name(owner_email)
+        if staff_target and staff_target not in (owner_email, owner_display.lower()):
             continue
         filtered_rows.append(row)
 
@@ -656,12 +682,12 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
 def export_active_events(rows: list[dict], date_start: str, date_end: str,
                          staff_name: str | None = None,
                          reconciled_set: set[str] | None = None) -> list[dict]:
-    """Return likely-open ASSIGNED tickets with SAMI references for CSV/export.
-
-    Active scope is constrained to assignments within date_start/date_end and
-    excludes tickets completed by date_end.
-    """
-    rows_out = _collect_active_identity_rows(rows, date_end, staff_name=staff_name, date_start=date_start)
+    """Return likely-open SAMI-backed tickets as of date_end for CSV/export."""
+    _ = date_start
+    rows_out = [
+        r for r in _collect_active_identity_rows(rows, date_end, staff_name=staff_name, date_start=date_start)
+        if (r.get("SAMI Ref") or "").strip()
+    ]
 
     # Filter out reconciled identities BEFORE aggregation/output
     if reconciled_set:
@@ -799,7 +825,10 @@ def compute_dashboard(rows: list[dict] | None, roster_state: dict | None,
     processed = len(processed_keys)
 
     # Keep summary active_count in parity with /api/active modal output.
-    active_rows_all = _collect_active_identity_rows(rows, de, staff_name=staff_filter, date_start=ds)
+    active_rows_all = [
+        row for row in _collect_active_identity_rows(rows, de, staff_name=staff_filter, date_start=ds)
+        if (row.get("SAMI Ref") or "").strip()
+    ]
     reconciled_completed_rows = []
     if reconciled_set:
         reconciled_completed_rows = [
@@ -1558,4 +1587,3 @@ def _build_activity_feed(filtered: list[dict], all_events: list[dict], limit: in
             "risk_level": e["risk_level"],
         })
     return result
-

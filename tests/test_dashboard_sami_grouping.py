@@ -244,8 +244,8 @@ class DashboardSamiGroupingTests(unittest.TestCase):
                 reconciled_set=set(),
             )
 
-        self.assertEqual(payload["summary"]["active_count"], 0)
-        self.assertEqual(sum(r["active"] for r in payload["staff_kpis"]), 0)
+        self.assertEqual(payload["summary"]["active_count"], 1)
+        self.assertEqual(sum(r["active"] for r in payload["staff_kpis"]), 1)
 
 
 
