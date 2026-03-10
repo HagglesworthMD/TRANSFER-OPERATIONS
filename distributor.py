@@ -207,7 +207,18 @@ ALLOWED_OVERRIDES = {
 }
 
 # ==================== SAFE_MODE ====================
-def determine_safe_mode(inbox_folder):
+def _is_live_sami_production_target(mailbox_value, inbox_folder, processed_folder):
+    mailbox_norm = str(mailbox_value or "").strip().lower()
+    inbox_norm = str(inbox_folder or "").strip().replace("\\", "/").lower().strip("/")
+    processed_norm = str(processed_folder or "").strip().replace("\\", "/").lower().strip("/")
+    if mailbox_norm not in {"health:samisupportteam", SAMI_SUPPORT_MAILBOX.lower()}:
+        return False
+    if inbox_norm != "inbox":
+        return False
+    return processed_norm in {"02_processed", "inbox/02_processed"}
+
+
+def determine_safe_mode(inbox_folder, mailbox_value=None, processed_folder=None):
     """
     Determine SAFE_MODE status using a specific inbox folder value.
 
@@ -216,6 +227,9 @@ def determine_safe_mode(inbox_folder):
     env_value = os.environ.get("TRANSFER_BOT_LIVE", "").strip().lower()
     if env_value != "true":
         return (True, "env_missing", False)
+
+    if _is_live_sami_production_target(mailbox_value, inbox_folder, processed_folder):
+        return (False, "live_mode_armed", False)
 
     inbox_value = inbox_folder or ""
     if "test" in inbox_value.lower():
@@ -240,13 +254,21 @@ def is_safe_mode():
     """
     if _safe_mode_cache is not None:
         return _safe_mode_cache
-    is_safe, reason, _ = determine_safe_mode(CONFIG.get("inbox_folder", ""))
+    is_safe, reason, _ = determine_safe_mode(
+        CONFIG.get("inbox_folder", ""),
+        CONFIG.get("mailbox", ""),
+        CONFIG.get("processed_folder", ""),
+    )
     return (is_safe, reason)
 
 def log_safe_mode_status(inbox_folder=None):
     """Log SAFE_MODE status"""
     inbox_value = inbox_folder if inbox_folder is not None else CONFIG.get("inbox_folder", "")
-    is_safe, reason, override_active = determine_safe_mode(inbox_value)
+    is_safe, reason, override_active = determine_safe_mode(
+        inbox_value,
+        CONFIG.get("mailbox", ""),
+        CONFIG.get("processed_folder", ""),
+    )
     if override_active:
         log(f"LIVE_TEST_OVERRIDE_ENABLED inbox_folder={inbox_value}", "INFO")
     if is_safe:
@@ -854,6 +876,28 @@ def compute_message_identity(msg, sender_email, subject, received_iso):
         "internet_message_id": internet_message_id
     }
 
+
+def _archive_assignment_recovery_anchor(msg, processed, sender_email, subject, received_iso):
+    """Move the untouched original to processed and capture its recovery identity."""
+    if msg is None or processed is None:
+        return None, None
+    try:
+        archived_msg = msg.Move(processed)
+    except Exception as e:
+        log(f"ASSIGNMENT_ARCHIVE_FAIL error={e}", "ERROR")
+        return None, None
+    archived_msg = archived_msg if archived_msg is not None else msg
+    _archive_key, archive_identity = compute_message_identity(
+        archived_msg,
+        sender_email,
+        subject,
+        received_iso,
+    )
+    if not archive_identity.get("entry_id") or not archive_identity.get("store_id"):
+        log("ASSIGNMENT_ARCHIVE_FAIL reason=missing_identity", "ERROR")
+        return None, None
+    return archived_msg, archive_identity
+
 # ==================== LOGGING ====================
 def log(msg, level="INFO"):
     """Timestamped logging (encoding-safe for Windows console)"""
@@ -1394,10 +1438,10 @@ def _resolve_stale_reloop_runtime():
             mailbox = find_mailbox_root_robust(namespace, effective_config["mailbox"])
         if not mailbox:
             return None, None, target_store
-        inbox, _ = resolve_folder(mailbox, effective_config["inbox_folder"])
-        if not inbox:
+        processed, _ = resolve_folder(mailbox, effective_config["processed_folder"])
+        if not processed:
             return None, None, target_store
-        return namespace, inbox, target_store
+        return namespace, processed, target_store
     except Exception as e:
         log(f"STALE_RELOOP_RUNTIME_FAIL error={e}", "ERROR")
         return None, None, ""
@@ -1498,7 +1542,7 @@ def _find_manual_stale_target_entry(processed_ledger, known_staff_set, msg_key="
 def _append_manual_stale_audit(event_type, *, entry, sender, status_after, msg_key, now_dt):
     append_stats(
         subject=f"{event_type} key={msg_key}",
-        assigned_to="unassigned" if event_type == "MANUAL_STALE_RELEASE" else "skipped",
+        assigned_to=str((entry or {}).get("assigned_to") or "").strip() if event_type == "MANUAL_STALE_RELEASE" else "skipped",
         sender=sender or "dashboard_admin",
         risk_level=(entry or {}).get("risk", "normal") or "normal",
         domain_bucket="",
@@ -1513,8 +1557,101 @@ def _append_manual_stale_audit(event_type, *, entry, sender, status_after, msg_k
         sami_id=str((entry or {}).get("sami_id") or "").strip(),
     )
 
+def _build_stale_reassign_subject(msg, entry):
+    subject = ""
+    try:
+        subject = getattr(msg, "Subject", "") or ""
+    except Exception:
+        subject = ""
+    sami_id = str((entry or {}).get("sami_id") or "").strip().upper()
+    if sami_id and f"[{sami_id}]".lower() not in subject.lower():
+        return f"[{sami_id}] {subject}".strip()
+    return ensure_sami_id_in_subject(subject, msg)
+
+
+def _forward_stale_reassign_in_place(msg, entry, assignee, staff_list, target_store):
+    if msg is None or not assignee:
+        return False
+    try:
+        _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+        if not _sb_ok:
+            log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+            return False
+
+        fwd = msg.Forward()
+        fwd.Recipients.Add(assignee)
+        subject_with_id = _build_stale_reassign_subject(msg, entry)
+        fwd.Body = f"--- AUTO-ASSIGNED TO {assignee} ---\n\n" + (fwd.Body or "")
+        fwd.Subject = subject_with_id
+        fwd.SentOnBehalfOfName = CONFIG["mailbox"]
+
+        overrides = load_settings_overrides(SETTINGS_OVERRIDES_PATH) or {}
+        completion_workflow_enabled = CONFIG.get("enable_completion_workflow", False)
+        completion_cc_enabled = completion_workflow_enabled and CONFIG.get("enable_completion_cc", True)
+        effective_completion_cc = overrides.get("completion_cc_addr", COMPLETION_CC_ADDR) if isinstance(overrides, dict) else COMPLETION_CC_ADDR
+        if completion_cc_enabled:
+            try:
+                cc_recipient = fwd.Recipients.Add(effective_completion_cc)
+                try:
+                    cc_recipient.Type = 2
+                except Exception:
+                    pass
+                try:
+                    fwd.Recipients.ResolveAll()
+                except Exception:
+                    pass
+                log("FORWARD_CC_ADDED completion_cc_addr=set", "INFO")
+            except Exception as e:
+                log(f"FORWARD_CC_ADD_FAIL {e}", "WARN")
+
+        try:
+            requester = resolve_sender_smtp(msg) or getattr(msg, "SenderEmailAddress", "") or ""
+        except Exception:
+            requester = ""
+        staff_set = {s.lower() for s in (staff_list or []) if isinstance(s, str)}
+        if is_completion_subject(subject_with_id):
+            skip_reason = "completion_email"
+        elif assignee.lower() not in staff_set:
+            skip_reason = "assignee_not_staff"
+        elif not requester or "@" not in requester:
+            skip_reason = "requester_unavailable"
+        else:
+            skip_reason = ""
+        msg_id = getattr(msg, "EntryID", "") or getattr(msg, "ConversationID", "") or ""
+        if skip_reason:
+            log(f"COMPLETION_HOTLINK_SKIPPED reason={skip_reason} msg_id={msg_id}", "INFO")
+        else:
+            try:
+                mode_out = []
+                injected = inject_completion_hotlink(
+                    fwd,
+                    requester.strip(),
+                    subject_with_id,
+                    SAMI_SHARED_INBOX,
+                    mode_out,
+                    original_msg=msg,
+                )
+                if injected:
+                    mode = mode_out[0] if mode_out else "HTML"
+                    log(f"COMPLETION_HOTLINK_ADDED mode={mode} msg_id={msg_id}", "INFO")
+                else:
+                    log(f"COMPLETION_HOTLINK_SKIPPED reason=inject_failed msg_id={msg_id}", "WARN")
+            except Exception as e:
+                log(f"COMPLETION_HOTLINK_FAIL context=stale_reassign msg_id={msg_id} error={e}", "WARN")
+
+        is_safe, safe_reason = is_safe_mode()
+        if is_safe:
+            log(f"SAFE_MODE_SUPPRESS_SEND action=stale_reassign_in_place assignee={assignee} reason={safe_reason}", "WARN")
+        else:
+            fwd.Send()
+        return True
+    except Exception as e:
+        log(f"STALE_REASSIGN_IN_PLACE_FAIL assignee={assignee} error={e}", "ERROR")
+        return False
+
+
 def process_stale_assignment_reloop():
-    """Move stale assignments back to inbox and mark unread for requeue."""
+    """Reassign stale processed-held assignments in place without using Inbox."""
     staff_list = sorted(get_staff_list())
     if not staff_list:
         log("STALE_RELOOP_SKIP reason=no_staff_available", "INFO")
@@ -1525,10 +1662,12 @@ def process_stale_assignment_reloop():
         log("STALE_RELOOP_SKIP reason=ledger_unavailable", "WARN")
         return True
 
-    namespace, inbox, target_store = _resolve_stale_reloop_runtime()
-    if not namespace or not inbox:
+    namespace, processed, target_store = _resolve_stale_reloop_runtime()
+    if not namespace or not processed:
         log("STALE_RELOOP_SKIP reason=mailbox_unavailable", "WARN")
         return False
+    processed_source = get_folder_path_safe(processed) or getattr(processed, "Name", "") or CONFIG.get("processed_folder", "")
+    log(f"STALE_RELOOP_SOURCE source=processed folder={processed_source}", "INFO")
 
     stale_threshold = timedelta(hours=6)
     item_not_found_backoff = timedelta(hours=1)
@@ -1608,24 +1747,20 @@ def process_stale_assignment_reloop():
             log(f"STALE_RELOOP_ITEM_NOT_FOUND key={ledger_key}", "WARN")
             changed = True
             continue
-        _sb_ok, _sb_actual = check_msg_mailbox_store(stale_item, target_store)
-        if not _sb_ok:
-            log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+        new_assignee = get_next_staff()
+        if not new_assignee:
+            log(f"STALE_RELOOP_SKIP key={ledger_key} reason=no_staff_available", "WARN")
             continue
-        try:
-            stale_item.UnRead = True
-            stale_item.Move(inbox)
-        except Exception as e:
-            log(f"STALE_RELOOP_MOVE_FAIL key={ledger_key} error={e}", "ERROR")
+        if not _forward_stale_reassign_in_place(stale_item, entry, new_assignee, staff_list, target_store):
             continue
 
         entry["stale_last_owner"] = assigned_to
-        entry["assigned_to"] = ""
+        entry["assigned_to"] = new_assignee
         entry["stale_last_reloop_at"] = now_dt.isoformat()
         entry["stale_reloop_count"] = current_reloops + 1
         append_stats(
             subject=f"STALE_RELOOP key={ledger_key}",
-            assigned_to="unassigned",
+            assigned_to=new_assignee,
             sender="system",
             risk_level=entry.get("risk", "normal") or "normal",
             domain_bucket="",
@@ -1633,11 +1768,15 @@ def process_stale_assignment_reloop():
             policy_source="stale_reloop",
             event_type="STALE_RELOOP",
             msg_key=ledger_key,
-            status_after="relooped",
+            status_after="assigned",
             assigned_ts=now_dt.isoformat(),
             completed_ts="",
             duration_sec="",
             sami_id=sami_id,
+        )
+        log(
+            f"STALE_REASSIGN_IN_PLACE_OK key={ledger_key} source=processed action=stale_reassign_in_place old_owner={assigned_to} new_owner={new_assignee}",
+            "INFO",
         )
         changed = True
 
@@ -1650,7 +1789,7 @@ def process_stale_assignment_reloop():
 
 
 def process_manual_stale_requests():
-    """Process one-shot manual stale release requests written by the dashboard."""
+    """Process one-shot manual stale reassignment requests from processed-held items."""
     if not os.path.exists(MANUAL_STALE_REQUESTS_PATH):
         return
 
@@ -1661,10 +1800,65 @@ def process_manual_stale_requests():
         log("MANUAL_STALE_QUEUE_INVALID reason=not_object", "WARN")
         return
 
-    namespace, inbox, target_store = _resolve_stale_reloop_runtime()
-    if not namespace or not inbox:
+    staff_list = sorted(get_staff_list())
+    if not staff_list:
+        processed_ledger = load_processed_ledger()
+        if not isinstance(processed_ledger, dict):
+            log("MANUAL_STALE_SKIP reason=ledger_unavailable", "WARN")
+            return
+        known_staff_set = _get_known_staff_for_stale_reloop()
+        remaining = dict(queue)
+        skipped = 0
+        for request_key in sorted(queue.keys()):
+            request = queue.get(request_key)
+            now_dt = datetime.now()
+            if not isinstance(request, dict):
+                skipped += 1
+                remaining.pop(request_key, None)
+                _append_manual_stale_audit(
+                    "MANUAL_STALE_RELEASE_SKIPPED",
+                    entry={},
+                    sender="dashboard_admin",
+                    status_after="invalid_request",
+                    msg_key="",
+                    now_dt=now_dt,
+                )
+                log(f"MANUAL_STALE_SKIP request_key={request_key} reason=invalid_request", "WARN")
+                continue
+            msg_key = str(request.get("msg_key") or "").strip()
+            sami_id = str(request.get("sami_id") or "").strip()
+            requested_by = str(request.get("requested_by") or "dashboard_admin").strip() or "dashboard_admin"
+            request_id = str(request.get("request_id") or request_key)
+            ledger_key, entry = _find_manual_stale_target_entry(
+                processed_ledger,
+                known_staff_set,
+                msg_key=msg_key,
+                sami_id=sami_id,
+            )
+            skipped += 1
+            remaining.pop(request_key, None)
+            _append_manual_stale_audit(
+                "MANUAL_STALE_RELEASE_SKIPPED",
+                entry=entry or {},
+                sender=requested_by,
+                status_after="no_staff_available",
+                msg_key=ledger_key or msg_key,
+                now_dt=now_dt,
+            )
+            log(
+                f"MANUAL_STALE_SKIP request_id={request_id} key={ledger_key or msg_key} source=processed reason=no_staff_available",
+                "WARN",
+            )
+        if skipped and not atomic_write_json(MANUAL_STALE_REQUESTS_PATH, remaining):
+            log("STATE_WRITE_FAIL state=manual_stale_requests", "ERROR")
+        return
+
+    namespace, processed, target_store = _resolve_stale_reloop_runtime()
+    if not namespace or not processed:
         log(f"MANUAL_STALE_SKIP reason=mailbox_unavailable pending={len(queue)}", "WARN")
         return
+    processed_source = get_folder_path_safe(processed) or getattr(processed, "Name", "") or CONFIG.get("processed_folder", "")
+    log(f"MANUAL_STALE_SOURCE source=processed folder={processed_source} pending={len(queue)}", "INFO")
 
     processed_ledger = load_processed_ledger()
     if not isinstance(processed_ledger, dict):
@@ -1749,37 +1943,50 @@ def process_manual_stale_requests():
             log(f"MANUAL_STALE_SKIP request_id={request_id} key={ledger_key} reason=item_not_found", "WARN")
             continue
 
-        _sb_ok, _sb_actual = check_msg_mailbox_store(stale_item, target_store)
-        if not _sb_ok:
+        new_assignee = get_next_staff()
+        if not new_assignee:
             skipped += 1
             remaining.pop(request_key, None)
             _append_manual_stale_audit(
                 "MANUAL_STALE_RELEASE_SKIPPED",
                 entry=entry,
                 sender=requested_by,
-                status_after="wrong_mailbox",
+                status_after="no_staff_available",
                 msg_key=ledger_key,
                 now_dt=now_dt,
             )
-            log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+            log(
+                f"MANUAL_STALE_SKIP request_id={request_id} key={ledger_key} source=processed reason=no_staff_available",
+                "WARN",
+            )
             continue
-
-        try:
-            stale_item.UnRead = True
-            stale_item.Move(inbox)
-        except Exception as e:
-            log(f"MANUAL_STALE_MOVE_FAIL request_id={request_id} key={ledger_key} error={e}", "ERROR")
+        if not _forward_stale_reassign_in_place(stale_item, entry, new_assignee, staff_list, target_store):
+            skipped += 1
+            remaining.pop(request_key, None)
+            _append_manual_stale_audit(
+                "MANUAL_STALE_RELEASE_SKIPPED",
+                entry=entry,
+                sender=requested_by,
+                status_after="reassign_failed",
+                msg_key=ledger_key,
+                now_dt=now_dt,
+            )
+            log(
+                f"MANUAL_STALE_SKIP request_id={request_id} key={ledger_key} source=processed reason=reassign_failed",
+                "WARN",
+            )
             continue
 
         entry["stale_last_owner"] = assigned_to
-        entry["assigned_to"] = ""
+        entry["assigned_to"] = new_assignee
         entry["stale_last_reloop_at"] = now_dt.isoformat()
         processed_ledger[ledger_key] = entry
         pending_success_audits.append({
             "request_id": request_id,
             "requested_by": requested_by,
             "ledger_key": ledger_key,
-            "assigned_to": assigned_to,
+            "assigned_to": new_assignee,
+            "previous_owner": assigned_to,
             "entry": dict(entry),
             "now_dt": now_dt,
         })
@@ -1800,12 +2007,12 @@ def process_manual_stale_requests():
             "MANUAL_STALE_RELEASE",
             entry=success["entry"],
             sender=success["requested_by"],
-            status_after="relooped",
+            status_after="assigned",
             msg_key=success["ledger_key"],
             now_dt=success["now_dt"],
         )
         log(
-            f"MANUAL_STALE_RELEASE_OK request_id={success['request_id']} key={success['ledger_key']} owner={success['assigned_to']}",
+            f"MANUAL_STALE_RELEASE_OK request_id={success['request_id']} key={success['ledger_key']} source=processed action=stale_reassign_in_place old_owner={success['previous_owner']} new_owner={success['assigned_to']}",
             "INFO",
         )
 
@@ -3376,7 +3583,11 @@ def process_inbox():
     global _safe_mode_cache, _safe_mode_inbox, _live_test_override, _jira_followup_folder_error_logged
     global _mailbox_resolution_ok_last_tick
     _mailbox_resolution_ok_last_tick = True
-    is_safe, safe_reason, override_active = determine_safe_mode(effective_config.get("inbox_folder", ""))
+    is_safe, safe_reason, override_active = determine_safe_mode(
+        effective_config.get("inbox_folder", ""),
+        effective_config.get("mailbox", ""),
+        effective_config.get("processed_folder", ""),
+    )
     _safe_mode_cache = (is_safe, safe_reason)
     _safe_mode_inbox = effective_config.get("inbox_folder", "")
     _live_test_override = override_active
@@ -4532,27 +4743,7 @@ def process_inbox():
                         skipped_count += 1
                         continue
 
-                    processed_ledger[message_key] = {
-                        "ts": datetime.now().isoformat(),
-                        "assigned_to": assignee,
-                        "risk": risk_level
-                    }
-                    if action_taken == "hib_noise_suppressed":
-                        processed_ledger[message_key]["reason"] = "hib_noise_suppressed"
-                    if match_level:
-                        processed_ledger[message_key]["match_level"] = match_level
-                    if identity.get("entry_id"):
-                        processed_ledger[message_key]["entry_id"] = identity.get("entry_id")
-                    if identity.get("store_id"):
-                        processed_ledger[message_key]["store_id"] = identity.get("store_id")
-                    if identity.get("internet_message_id"):
-                        processed_ledger[message_key]["internet_message_id"] = identity.get("internet_message_id")
-                    if conversation_id:
-                        processed_ledger[message_key]["conversation_id"] = conversation_id
-                    if not save_processed_ledger(processed_ledger):
-                        log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
-                        errors_count += 1
-                        continue
+                    archive_identity = identity
 
                     if domain_bucket == "system_notification":
                         # Silent move to system_notification folder — no email sent
@@ -4726,54 +4917,73 @@ def process_inbox():
                     if not _sb_ok:
                         log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
                         append_stats(subject, "skipped", sender_email, risk_level, domain_bucket, "WRONG_MAILBOX", policy_source)
+                        continue
                     else:
                         # SAFE_MODE enforcement
                         is_safe, safe_reason = is_safe_mode()
                         if is_safe:
                             log(f"SAFE_MODE_SUPPRESS_SEND action={action_taken} bucket={domain_bucket} assignee={assignee} reason={safe_reason}", "WARN")
+                            continue
                         else:
                             fwd.Send()
 
+                    _archive_ok, _archive_actual = check_msg_mailbox_store(msg, target_store)
+                    if not _archive_ok:
+                        log(f"WRONG_MAILBOX expected={target_store} actual={_archive_actual}", "WARN")
+                        append_stats(subject, "skipped", sender_email, risk_level, domain_bucket, "WRONG_MAILBOX", policy_source)
+                        continue
+
+                    archived_msg, archive_identity = _archive_assignment_recovery_anchor(
+                        msg,
+                        processed,
+                        sender_email,
+                        subject,
+                        received_iso,
+                    )
+                    if archived_msg is None or archive_identity is None:
+                        errors_count += 1
+                        continue
+                    msg = archived_msg
+
                     # Persist SAMI ID + identity in ledger (all risk levels)
-                    _sami_id = compute_sami_id(msg) or ""
-                    _ledger_entry = processed_ledger.get(message_key, {})
+                    _sami_id = message_sami_id
+                    _ledger_entry = {
+                        "ts": datetime.now().isoformat(),
+                        "assigned_to": assignee,
+                        "risk": risk_level,
+                    }
                     if not _ledger_entry.get("sami_id"):
                         _ledger_entry["sami_id"] = _sami_id
-                    _ledger_entry["ts"] = datetime.now().isoformat()
-                    _ledger_entry["assigned_to"] = assignee
-                    _ledger_entry["risk"] = risk_level
+                    if action_taken == "hib_noise_suppressed":
+                        _ledger_entry["reason"] = "hib_noise_suppressed"
+                    if match_level:
+                        _ledger_entry["match_level"] = match_level
                     if risk_level == "critical":
                         _ledger_entry["reason"] = "critical_forwarded"
-                    if identity.get("entry_id"):
-                        _ledger_entry["entry_id"] = identity["entry_id"]
-                    if identity.get("store_id"):
-                        _ledger_entry["store_id"] = identity["store_id"]
-                    if identity.get("internet_message_id"):
-                        _ledger_entry["internet_message_id"] = identity["internet_message_id"]
+                    if archive_identity.get("entry_id"):
+                        _ledger_entry["entry_id"] = archive_identity["entry_id"]
+                    if archive_identity.get("store_id"):
+                        _ledger_entry["store_id"] = archive_identity["store_id"]
+                    if archive_identity.get("internet_message_id"):
+                        _ledger_entry["internet_message_id"] = archive_identity["internet_message_id"]
                     if conversation_id:
                         _ledger_entry["conversation_id"] = conversation_id
                     processed_ledger[message_key] = _ledger_entry
                     if not save_processed_ledger(processed_ledger):
                         log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
                         errors_count += 1
+                        continue
                     
                     if action_taken != "hib_noise_suppressed":
                         log(f"ASSIGNED msg_id={msg_id} risk={risk_level}", "INFO")
 
-                    # Archive original (no subject mutation per constraints)
+                    # Assignment audit only — the untouched recovery anchor is already in processed
                     # Set event_type=ASSIGNED when assignee is staff (contains @ and not system/bot)
                     _non_staff = {"bot", "completed", "error", "hib", "hold", "manager_review",
                                   "non_actionable", "quarantined", "skipped", "system_notification"}
                     a_norm = (assignee or "").strip().lower()
                     evt_type = "ASSIGNED" if ("@" in a_norm and a_norm not in _non_staff) else ""
                     append_stats(subject, assignee, sender_email, risk_level, domain_bucket, action_taken, policy_source, event_type=evt_type, msg_key=message_key, sami_id=_ledger_entry.get("sami_id", ""))
-                    msg.UnRead = False
-                    _sb_ok2, _sb_actual2 = check_msg_mailbox_store(msg, target_store)
-                    if not _sb_ok2:
-                        log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual2}", "WARN")
-                        append_stats(subject, "skipped", sender_email, risk_level, domain_bucket, "WRONG_MAILBOX", policy_source)
-                    else:
-                        msg.Move(processed)
                     processed_count += 1
 
                 except Exception as e:

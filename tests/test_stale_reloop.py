@@ -5,8 +5,8 @@ from unittest.mock import patch
 import distributor
 
 
-class _DummyInbox:
-    Name = "Inbox"
+class _DummyProcessed:
+    Name = "Processed"
 
 
 class _DummyMailItem:
@@ -46,7 +46,7 @@ class StaleReloopTests(unittest.TestCase):
         now = datetime.now()
         mock_known_staff.return_value = {"alice@test.com", "bob@test.com"}
         mock_staff.return_value = ["alice@test.com", "bob@test.com"]
-        mock_runtime.return_value = (object(), _DummyInbox(), "")
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
         mock_load.return_value = {
             "k1": self._base_ledger_entry(
                 hours_ago=20,
@@ -62,7 +62,8 @@ class StaleReloopTests(unittest.TestCase):
         mock_save.assert_not_called()
 
     @patch("distributor.log")
-    @patch("distributor.check_msg_mailbox_store", return_value=(True, "UnitTest Mailbox"))
+    @patch("distributor.get_next_staff", return_value="a@test.com")
+    @patch("distributor._forward_stale_reassign_in_place", return_value=True)
     @patch("distributor._resolve_mailitem_from_ledger_entry")
     @patch("distributor._resolve_stale_reloop_runtime")
     @patch("distributor.append_stats")
@@ -70,14 +71,14 @@ class StaleReloopTests(unittest.TestCase):
     @patch("distributor.load_processed_ledger")
     @patch("distributor.get_staff_list")
     @patch("distributor._get_known_staff_for_stale_reloop")
-    def test_stale_item_reloops_to_inbox_and_updates_ledger(
-        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_store_guard, mock_log
+    def test_stale_item_reassigns_in_place_and_updates_ledger(
+        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_next_staff, mock_log
     ):
         mock_known_staff.return_value = {"z@test.com", "a@test.com", "m@test.com"}
         mock_staff.return_value = ["z@test.com", "a@test.com", "m@test.com"]
-        inbox = _DummyInbox()
+        processed = _DummyProcessed()
         dummy_item = _DummyMailItem()
-        mock_runtime.return_value = (object(), inbox, "")
+        mock_runtime.return_value = (object(), processed, "")
         original_ts = (datetime.now() - timedelta(hours=13)).isoformat()
         mock_load.return_value = {
             "k1": self._base_ledger_entry(
@@ -92,18 +93,19 @@ class StaleReloopTests(unittest.TestCase):
         distributor.process_stale_assignment_reloop()
 
         saved_ledger = mock_save.call_args[0][0]
-        self.assertEqual(dummy_item.moved_to, inbox)
-        self.assertTrue(dummy_item.UnRead)
-        self.assertEqual(saved_ledger["k1"]["assigned_to"], "")
+        self.assertIsNone(dummy_item.moved_to)
+        self.assertFalse(dummy_item.UnRead)
+        self.assertEqual(saved_ledger["k1"]["assigned_to"], "a@test.com")
         self.assertEqual(saved_ledger["k1"]["ts"], original_ts)
         self.assertIn("stale_last_reloop_at", saved_ledger["k1"])
         self.assertEqual(saved_ledger["k1"]["stale_reloop_count"], 1)
         self.assertEqual(mock_stats.call_args[1]["event_type"], "STALE_RELOOP")
-        self.assertEqual(mock_stats.call_args[1]["assigned_to"], "unassigned")
+        self.assertEqual(mock_stats.call_args[1]["assigned_to"], "a@test.com")
         mock_save.assert_called_once()
 
     @patch("distributor.log")
-    @patch("distributor.check_msg_mailbox_store", return_value=(True, "UnitTest Mailbox"))
+    @patch("distributor.get_next_staff", return_value="brian.shaw@sa.gov.au")
+    @patch("distributor._forward_stale_reassign_in_place", return_value=True)
     @patch("distributor._resolve_mailitem_from_ledger_entry")
     @patch("distributor._resolve_stale_reloop_runtime")
     @patch("distributor.append_stats")
@@ -111,13 +113,13 @@ class StaleReloopTests(unittest.TestCase):
     @patch("distributor.load_processed_ledger")
     @patch("distributor.get_staff_list")
     def test_stale_reloop_uses_known_staff_when_assignee_is_off_rotation(
-        self, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_store_guard, mock_log
+        self, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_next_staff, mock_log
     ):
         mock_staff.return_value = ["brian.shaw@sa.gov.au"]
-        inbox = _DummyInbox()
+        processed = _DummyProcessed()
         dummy_item = _DummyMailItem()
         original_ts = (datetime.now() - timedelta(hours=13)).isoformat()
-        mock_runtime.return_value = (object(), inbox, "")
+        mock_runtime.return_value = (object(), processed, "")
         mock_load.return_value = {
             "k1": self._base_ledger_entry(
                 assigned_to="hannah.cutting@sa.gov.au",
@@ -131,14 +133,14 @@ class StaleReloopTests(unittest.TestCase):
         distributor.process_stale_assignment_reloop()
 
         saved_ledger = mock_save.call_args[0][0]
-        self.assertEqual(dummy_item.moved_to, inbox)
-        self.assertTrue(dummy_item.UnRead)
-        self.assertEqual(saved_ledger["k1"]["assigned_to"], "")
+        self.assertIsNone(dummy_item.moved_to)
+        self.assertFalse(dummy_item.UnRead)
+        self.assertEqual(saved_ledger["k1"]["assigned_to"], "brian.shaw@sa.gov.au")
         self.assertEqual(saved_ledger["k1"]["ts"], original_ts)
         self.assertIn("stale_last_reloop_at", saved_ledger["k1"])
         self.assertEqual(saved_ledger["k1"]["stale_reloop_count"], 1)
         self.assertEqual(mock_stats.call_args[1]["event_type"], "STALE_RELOOP")
-        self.assertEqual(mock_stats.call_args[1]["assigned_to"], "unassigned")
+        self.assertEqual(mock_stats.call_args[1]["assigned_to"], "brian.shaw@sa.gov.au")
         mock_save.assert_called_once()
 
     @patch("distributor.log")
@@ -152,7 +154,7 @@ class StaleReloopTests(unittest.TestCase):
         self, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, mock_log
     ):
         mock_staff.return_value = ["brian.shaw@sa.gov.au"]
-        mock_runtime.return_value = (object(), _DummyInbox(), "")
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
         mock_load.return_value = {
             "k1": self._base_ledger_entry(
                 assigned_to="kate.cook@sa.gov.au",
@@ -178,7 +180,7 @@ class StaleReloopTests(unittest.TestCase):
         self, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, mock_log
     ):
         mock_staff.return_value = ["alice@test.com", "bob@test.com"]
-        mock_runtime.return_value = (object(), _DummyInbox(), "")
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
         old_ts = (datetime.now() - timedelta(hours=13)).isoformat()
         mock_load.return_value = {
             "k1::JIRA_FOLLOWUP": self._base_ledger_entry(
@@ -211,7 +213,7 @@ class StaleReloopTests(unittest.TestCase):
     ):
         mock_known_staff.return_value = {"alice@test.com"}
         mock_staff.return_value = ["alice@test.com"]
-        mock_runtime.return_value = (object(), _DummyInbox(), "")
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
         mock_load.return_value = {
             "k1": self._base_ledger_entry(
                 assigned_to="alice@test.com",
@@ -244,7 +246,7 @@ class StaleReloopTests(unittest.TestCase):
     ):
         mock_known_staff.return_value = {"alice@test.com"}
         mock_staff.return_value = ["alice@test.com"]
-        mock_runtime.return_value = (object(), _DummyInbox(), "")
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
         mock_load.return_value = {
             "k1": self._base_ledger_entry(
                 assigned_to="alice@test.com",
@@ -275,7 +277,7 @@ class StaleReloopTests(unittest.TestCase):
     ):
         mock_known_staff.return_value = {"alice@test.com"}
         mock_staff.return_value = ["alice@test.com"]
-        mock_runtime.return_value = (object(), _DummyInbox(), "")
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
         mock_load.return_value = {
             "k1": self._base_ledger_entry(
                 assigned_to="alice@test.com",
@@ -310,7 +312,7 @@ class StaleReloopTests(unittest.TestCase):
         now = datetime.now()
         mock_known_staff.return_value = {"alice@test.com", "bob@test.com"}
         mock_staff.return_value = ["alice@test.com", "bob@test.com"]
-        mock_runtime.return_value = (object(), _DummyInbox(), "")
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
         mock_load.return_value = {
             "k1": self._base_ledger_entry(
                 assigned_to="alice@test.com",
@@ -332,7 +334,8 @@ class StaleReloopTests(unittest.TestCase):
         mock_save.assert_called_once()
 
     @patch("distributor.log")
-    @patch("distributor.check_msg_mailbox_store", return_value=(True, "UnitTest Mailbox"))
+    @patch("distributor.get_next_staff", return_value="a@test.com")
+    @patch("distributor._forward_stale_reassign_in_place", return_value=True)
     @patch("distributor._resolve_mailitem_from_ledger_entry")
     @patch("distributor._resolve_stale_reloop_runtime")
     @patch("distributor.append_stats")
@@ -341,12 +344,12 @@ class StaleReloopTests(unittest.TestCase):
     @patch("distributor.get_staff_list")
     @patch("distributor._get_known_staff_for_stale_reloop")
     def test_processed_ledger_saved_once_per_pass(
-        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_store_guard, mock_log
+        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_next_staff, mock_log
     ):
         now = datetime.now()
         mock_known_staff.return_value = {"alice@test.com", "bob@test.com", "carol@test.com"}
         mock_staff.return_value = ["alice@test.com", "bob@test.com", "carol@test.com"]
-        mock_runtime.return_value = (object(), _DummyInbox(), "")
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
         mock_load.return_value = {
             "k1": self._base_ledger_entry(
                 assigned_to="alice@test.com",
@@ -367,6 +370,87 @@ class StaleReloopTests(unittest.TestCase):
 
         self.assertEqual(mock_stats.call_count, 2)
         mock_save.assert_called_once()
+
+
+class _DummyRecipients:
+    def Add(self, _value):
+        return self
+
+    def ResolveAll(self):
+        return True
+
+
+class _DummyForward:
+    def __init__(self):
+        self.Recipients = _DummyRecipients()
+        self.Body = "Original"
+        self.Subject = ""
+        self.SentOnBehalfOfName = None
+
+    def Send(self):
+        self.sent = True
+
+
+class _DummyHotlinkMessage:
+    Subject = "Image transfer request"
+    SenderEmailAddress = "requester@example.com"
+    EntryID = "ENTRY-1"
+    ConversationID = "CONV-1"
+
+    def Forward(self):
+        self.forward = _DummyForward()
+        return self.forward
+
+
+class SafeModeTests(unittest.TestCase):
+    def test_live_sami_production_target_is_not_treated_as_test_folder(self):
+        with patch.dict("os.environ", {"TRANSFER_BOT_LIVE": "true"}, clear=False):
+            is_safe, reason, override_active = distributor.determine_safe_mode(
+                "Inbox",
+                "Health:SAMISupportTeam",
+                "Inbox/02_PROCESSED",
+            )
+
+        self.assertFalse(is_safe)
+        self.assertEqual(reason, "live_mode_armed")
+        self.assertFalse(override_active)
+
+    def test_test_folder_still_requires_override_for_non_production_target(self):
+        with patch.dict("os.environ", {"TRANSFER_BOT_LIVE": "true", "TRANSFER_BOT_ALLOW_TEST_FOLDER": ""}, clear=False):
+            is_safe, reason, override_active = distributor.determine_safe_mode(
+                "Transfer Bot Test Received",
+                "Brian.Shaw@sa.gov.au",
+                "Transfer Bot Test",
+            )
+
+        self.assertTrue(is_safe)
+        self.assertEqual(reason, "test_folder")
+        self.assertFalse(override_active)
+
+
+class StaleReassignHelperTests(unittest.TestCase):
+    @patch("distributor.log")
+    @patch("distributor.is_safe_mode", return_value=(False, ""))
+    @patch("distributor.inject_completion_hotlink", side_effect=RuntimeError("boom"))
+    @patch("distributor.check_msg_mailbox_store", return_value=(True, "UnitTest Mailbox"))
+    def test_hotlink_failure_does_not_block_stale_reassign_send(
+        self, _mock_store, _mock_hotlink, _mock_safe_mode, mock_log
+    ):
+        msg = _DummyHotlinkMessage()
+        entry = {"sami_id": "SAMI-123456"}
+
+        ok = distributor._forward_stale_reassign_in_place(
+            msg,
+            entry,
+            "staff.one@sa.gov.au",
+            ["staff.one@sa.gov.au"],
+            "",
+        )
+
+        self.assertTrue(ok)
+        self.assertTrue(getattr(msg.forward, "sent", False))
+        log_messages = [call.args[0] for call in mock_log.call_args_list]
+        self.assertTrue(any("COMPLETION_HOTLINK_FAIL context=stale_reassign" in message for message in log_messages))
 
 
 class RunJobStaleIntegrationTests(unittest.TestCase):

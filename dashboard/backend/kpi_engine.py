@@ -528,7 +528,7 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
     events = _normalise_rows(rows)
     candidates = [
         e for e in events
-        if e.get("event_type") in ("ASSIGNED", "REASSIGN_MANUAL", "STALE_RELOOP") and (not (e.get("date") or "") or (e.get("date") or "") <= date_end)
+        if e.get("event_type") in ("ASSIGNED", "REASSIGN_MANUAL", "STALE_RELOOP", "MANUAL_STALE_RELEASE") and (not (e.get("date") or "") or (e.get("date") or "") <= date_end)
     ]
 
     staff_target = (staff_name or "").strip().lower()
@@ -551,6 +551,9 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
         if event_type != "MANUAL_STALE_RELEASE":
             continue
         if (e.get("date") or "") > date_end:
+            continue
+        assigned_to = (e.get("assigned_to") or "").strip().lower()
+        if _is_staff(assigned_to):
             continue
         identity = _active_identity_key(e)
         if not identity:
@@ -575,8 +578,8 @@ def _collect_active_identity_rows(rows: list[dict], date_end: str, staff_name: s
         current_ts = e.get("event_ts")
         event_type = (e.get("event_type") or "").strip().upper()
 
-        # STALE_RELOOP rows are operational reloop artifacts, not active-job ownership rows.
-        if event_type == "STALE_RELOOP":
+        # STALE_RELOOP rows are operational reloop artifacts for SAMI-backed tickets; current owner comes from the ledger.
+        if event_type == "STALE_RELOOP" and sami_ref:
             continue
 
         if start_cutoff:

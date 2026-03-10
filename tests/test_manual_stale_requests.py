@@ -48,29 +48,31 @@ class ManualStaleRequestTests(unittest.TestCase):
     @patch("distributor.atomic_write_json")
     @patch("distributor.save_processed_ledger")
     @patch("distributor.append_stats")
-    @patch("distributor.check_msg_mailbox_store", return_value=(True, "UnitTest Mailbox"))
+    @patch("distributor.get_next_staff", return_value="alex@test.com")
+    @patch("distributor._forward_stale_reassign_in_place", return_value=True)
     @patch("distributor._resolve_mailitem_from_ledger_entry")
     @patch("distributor.load_processed_ledger")
     @patch("distributor._resolve_stale_reloop_runtime")
     @patch("distributor.safe_load_json")
     @patch("distributor.os.path.exists", return_value=True)
-    def test_manual_stale_release_moves_item_back_to_inbox_and_consumes_request(
+    def test_manual_stale_release_reassigns_in_place_and_consumes_request(
         self,
         _mock_exists,
         mock_safe_load,
         mock_runtime,
         mock_load_ledger,
         mock_resolve_item,
-        _mock_store_guard,
+        _mock_forward,
+        _mock_next_staff,
         mock_stats,
         mock_save_ledger,
         mock_atomic_write,
         mock_log,
     ):
-        inbox = _DummyInbox()
+        processed = _DummyInbox()
         item = _DummyMailItem()
         mock_safe_load.return_value = {"msg:store:abc|entry:a1": self._queue_entry()}
-        mock_runtime.return_value = (object(), inbox, "")
+        mock_runtime.return_value = (object(), processed, "")
         mock_load_ledger.return_value = {"store:abc|entry:a1": self._ledger_entry()}
         mock_resolve_item.return_value = item
         mock_save_ledger.return_value = True
@@ -79,18 +81,18 @@ class ManualStaleRequestTests(unittest.TestCase):
         distributor.process_manual_stale_requests()
 
         saved_ledger = mock_save_ledger.call_args[0][0]
-        self.assertTrue(item.UnRead)
-        self.assertIs(item.moved_to, inbox)
-        self.assertEqual(saved_ledger["store:abc|entry:a1"]["assigned_to"], "")
+        self.assertFalse(item.UnRead)
+        self.assertIsNone(item.moved_to)
+        self.assertEqual(saved_ledger["store:abc|entry:a1"]["assigned_to"], "alex@test.com")
         self.assertEqual(saved_ledger["store:abc|entry:a1"]["stale_last_owner"], "hannah.cutting@sa.gov.au")
         self.assertIn("stale_last_reloop_at", saved_ledger["store:abc|entry:a1"])
         self.assertNotIn("stale_reloop_count", saved_ledger["store:abc|entry:a1"])
         self.assertEqual(mock_stats.call_args[1]["event_type"], "MANUAL_STALE_RELEASE")
-        self.assertEqual(mock_stats.call_args[1]["status_after"], "relooped")
+        self.assertEqual(mock_stats.call_args[1]["status_after"], "assigned")
         self.assertEqual(mock_atomic_write.call_args[0][0], distributor.MANUAL_STALE_REQUESTS_PATH)
         self.assertEqual(mock_atomic_write.call_args[0][1], {})
         log_messages = [call.args[0] for call in mock_log.call_args_list]
-        self.assertIn("MANUAL_STALE_RELEASE_OK request_id=manual-stale-1 key=store:abc|entry:a1 owner=hannah.cutting@sa.gov.au", log_messages)
+        self.assertIn("MANUAL_STALE_RELEASE_OK request_id=manual-stale-1 key=store:abc|entry:a1 source=processed action=stale_reassign_in_place old_owner=hannah.cutting@sa.gov.au new_owner=alex@test.com", log_messages)
 
     @patch("distributor.log")
     @patch("distributor.atomic_write_json")
@@ -130,7 +132,8 @@ class ManualStaleRequestTests(unittest.TestCase):
     @patch("distributor.log")
     @patch("distributor.atomic_write_json")
     @patch("distributor.append_stats")
-    @patch("distributor.check_msg_mailbox_store", return_value=(True, "UnitTest Mailbox"))
+    @patch("distributor.get_next_staff", return_value="alex@test.com")
+    @patch("distributor._forward_stale_reassign_in_place", return_value=True)
     @patch("distributor._resolve_mailitem_from_ledger_entry")
     @patch("distributor.load_processed_ledger")
     @patch("distributor._resolve_stale_reloop_runtime")
@@ -143,7 +146,8 @@ class ManualStaleRequestTests(unittest.TestCase):
         mock_runtime,
         mock_load_ledger,
         mock_resolve_item,
-        _mock_store_guard,
+        _mock_forward,
+        _mock_next_staff,
         mock_stats,
         mock_atomic_write,
         mock_log,
@@ -164,6 +168,116 @@ class ManualStaleRequestTests(unittest.TestCase):
         self.assertEqual(mock_stats.call_args[1]["event_type"], "MANUAL_STALE_RELEASE_SKIPPED")
         self.assertEqual(mock_stats.call_args[1]["status_after"], "item_not_found")
         self.assertEqual(mock_atomic_write.call_args_list[0][0][1], {})
+
+    @patch("distributor.log")
+    @patch("distributor.atomic_write_json")
+    @patch("distributor.append_stats")
+    @patch("distributor.get_staff_list", return_value=[])
+    @patch("distributor.load_processed_ledger")
+    @patch("distributor.safe_load_json")
+    @patch("distributor.os.path.exists", return_value=True)
+    def test_global_no_staff_available_consumes_requests_with_request_level_skip_audit(
+        self,
+        _mock_exists,
+        mock_safe_load,
+        mock_load_ledger,
+        _mock_staff_list,
+        mock_stats,
+        mock_atomic_write,
+        mock_log,
+    ):
+        mock_safe_load.return_value = {"msg:store:abc|entry:a1": self._queue_entry()}
+        mock_load_ledger.return_value = {"store:abc|entry:a1": self._ledger_entry()}
+        mock_atomic_write.return_value = True
+
+        distributor.process_manual_stale_requests()
+
+        self.assertEqual(mock_stats.call_args[1]["event_type"], "MANUAL_STALE_RELEASE_SKIPPED")
+        self.assertEqual(mock_stats.call_args[1]["status_after"], "no_staff_available")
+        self.assertEqual(mock_atomic_write.call_args[0][1], {})
+        log_messages = [call.args[0] for call in mock_log.call_args_list]
+        self.assertIn(
+            "MANUAL_STALE_SKIP request_id=manual-stale-1 key=store:abc|entry:a1 source=processed reason=no_staff_available",
+            log_messages,
+        )
+
+    @patch("distributor.log")
+    @patch("distributor.atomic_write_json")
+    @patch("distributor.append_stats")
+    @patch("distributor.get_next_staff", return_value=None)
+    @patch("distributor._resolve_mailitem_from_ledger_entry")
+    @patch("distributor.load_processed_ledger")
+    @patch("distributor._resolve_stale_reloop_runtime")
+    @patch("distributor.safe_load_json")
+    @patch("distributor.os.path.exists", return_value=True)
+    def test_no_staff_available_is_consumed_with_request_level_skip_audit(
+        self,
+        _mock_exists,
+        mock_safe_load,
+        mock_runtime,
+        mock_load_ledger,
+        mock_resolve_item,
+        _mock_next_staff,
+        mock_stats,
+        mock_atomic_write,
+        mock_log,
+    ):
+        mock_safe_load.return_value = {"msg:store:abc|entry:a1": self._queue_entry()}
+        mock_runtime.return_value = (object(), _DummyInbox(), "")
+        mock_load_ledger.return_value = {"store:abc|entry:a1": self._ledger_entry()}
+        mock_resolve_item.return_value = _DummyMailItem()
+        mock_atomic_write.return_value = True
+
+        distributor.process_manual_stale_requests()
+
+        self.assertEqual(mock_stats.call_args[1]["event_type"], "MANUAL_STALE_RELEASE_SKIPPED")
+        self.assertEqual(mock_stats.call_args[1]["status_after"], "no_staff_available")
+        self.assertEqual(mock_atomic_write.call_args[0][1], {})
+        log_messages = [call.args[0] for call in mock_log.call_args_list]
+        self.assertIn(
+            "MANUAL_STALE_SKIP request_id=manual-stale-1 key=store:abc|entry:a1 source=processed reason=no_staff_available",
+            log_messages,
+        )
+
+    @patch("distributor.log")
+    @patch("distributor.atomic_write_json")
+    @patch("distributor.append_stats")
+    @patch("distributor.get_next_staff", return_value="alex@test.com")
+    @patch("distributor._forward_stale_reassign_in_place", return_value=False)
+    @patch("distributor._resolve_mailitem_from_ledger_entry")
+    @patch("distributor.load_processed_ledger")
+    @patch("distributor._resolve_stale_reloop_runtime")
+    @patch("distributor.safe_load_json")
+    @patch("distributor.os.path.exists", return_value=True)
+    def test_reassign_failure_is_consumed_with_request_level_skip_audit(
+        self,
+        _mock_exists,
+        mock_safe_load,
+        mock_runtime,
+        mock_load_ledger,
+        mock_resolve_item,
+        _mock_forward,
+        _mock_next_staff,
+        mock_stats,
+        mock_atomic_write,
+        mock_log,
+    ):
+        mock_safe_load.return_value = {"msg:store:abc|entry:a1": self._queue_entry()}
+        mock_runtime.return_value = (object(), _DummyInbox(), "")
+        mock_load_ledger.return_value = {"store:abc|entry:a1": self._ledger_entry()}
+        mock_resolve_item.return_value = _DummyMailItem()
+        mock_atomic_write.return_value = True
+
+        distributor.process_manual_stale_requests()
+
+        self.assertEqual(mock_stats.call_args[1]["event_type"], "MANUAL_STALE_RELEASE_SKIPPED")
+        self.assertEqual(mock_stats.call_args[1]["status_after"], "reassign_failed")
+        self.assertEqual(mock_atomic_write.call_args[0][1], {})
+        log_messages = [call.args[0] for call in mock_log.call_args_list]
+        self.assertIn(
+            "MANUAL_STALE_SKIP request_id=manual-stale-1 key=store:abc|entry:a1 source=processed reason=reassign_failed",
+            log_messages,
+        )
 
     @patch("distributor.log")
     @patch("distributor.atomic_write_json")
@@ -200,7 +314,8 @@ class ManualStaleRequestTests(unittest.TestCase):
     @patch("distributor.atomic_write_json")
     @patch("distributor.save_processed_ledger", return_value=False)
     @patch("distributor.append_stats")
-    @patch("distributor.check_msg_mailbox_store", return_value=(True, "UnitTest Mailbox"))
+    @patch("distributor.get_next_staff", return_value="alex@test.com")
+    @patch("distributor._forward_stale_reassign_in_place", return_value=True)
     @patch("distributor._resolve_mailitem_from_ledger_entry")
     @patch("distributor.load_processed_ledger")
     @patch("distributor._resolve_stale_reloop_runtime")
@@ -213,23 +328,24 @@ class ManualStaleRequestTests(unittest.TestCase):
         mock_runtime,
         mock_load_ledger,
         mock_resolve_item,
-        _mock_store_guard,
+        _mock_forward,
+        _mock_next_staff,
         mock_stats,
         mock_save_ledger,
         mock_atomic_write,
         mock_log,
     ):
-        inbox = _DummyInbox()
+        processed = _DummyInbox()
         item = _DummyMailItem()
         mock_safe_load.return_value = {"msg:store:abc|entry:a1": self._queue_entry()}
-        mock_runtime.return_value = (object(), inbox, "")
+        mock_runtime.return_value = (object(), processed, "")
         mock_load_ledger.return_value = {"store:abc|entry:a1": self._ledger_entry()}
         mock_resolve_item.return_value = item
 
         distributor.process_manual_stale_requests()
 
-        self.assertTrue(item.UnRead)
-        self.assertIs(item.moved_to, inbox)
+        self.assertFalse(item.UnRead)
+        self.assertIsNone(item.moved_to)
         mock_save_ledger.assert_called_once()
         mock_atomic_write.assert_not_called()
         mock_stats.assert_not_called()

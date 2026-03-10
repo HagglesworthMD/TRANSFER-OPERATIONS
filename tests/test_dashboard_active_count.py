@@ -563,8 +563,16 @@ class DashboardActiveCountTests(unittest.TestCase):
             active_rows = export_active_events(rows, "2026-03-05", "2026-03-05", reconciled_set=set())
             self.assertEqual(len(active_rows), 0)
 
-    def test_stale_reloop_without_sami_is_excluded_from_active(self):
+    def test_stale_reloop_without_sami_uses_latest_owner_in_active(self):
         rows = [
+            self._row(
+                date=self.DAY,
+                time="09:00:00",
+                subject="Image transfer request",
+                event_type="ASSIGNED",
+                assigned_to="brian.shaw@sa.gov.au",
+                msg_key="store:abc|entry:xyz",
+            ),
             self._row(
                 date=self.DAY,
                 time="11:43:55",
@@ -580,9 +588,10 @@ class DashboardActiveCountTests(unittest.TestCase):
         ]
 
         active_rows = export_active_events(rows, self.DAY, self.DAY, reconciled_set=set())
-        self.assertEqual(len(active_rows), 0)
+        self.assertEqual(len(active_rows), 1)
+        self.assertEqual(active_rows[0]["Staff Email"], "hannah.cutting@sa.gov.au")
 
-    def test_manual_stale_release_closes_non_sami_active_row_by_identity(self):
+    def test_manual_stale_release_reassigns_non_sami_active_row_by_identity(self):
         rows = [
             self._row(
                 date=self.DAY,
@@ -597,7 +606,7 @@ class DashboardActiveCountTests(unittest.TestCase):
                 time="09:30:00",
                 subject="MANUAL_STALE_RELEASE key=store:abc|entry:a1",
                 event_type="MANUAL_STALE_RELEASE",
-                assigned_to="unassigned",
+                assigned_to="prav.mudaliar@sa.gov.au",
                 sender="dashboard_admin",
                 msg_key="store:abc|entry:a1",
                 action="MANUAL_STALE_RELEASE",
@@ -624,9 +633,10 @@ class DashboardActiveCountTests(unittest.TestCase):
             reconciled_set=set(),
         )
 
-        self.assertEqual(len(active_rows), 0)
+        self.assertEqual(len(active_rows), 1)
+        self.assertEqual(active_rows[0]["Staff Email"], "prav.mudaliar@sa.gov.au")
         self.assertEqual(len(staff_filtered), 0)
-        self.assertEqual(payload["summary"]["active_count"], 0)
+        self.assertEqual(payload["summary"]["active_count"], 1)
 
     def test_staff_filter_applies_after_ledger_owner_override(self):
         rows = [
