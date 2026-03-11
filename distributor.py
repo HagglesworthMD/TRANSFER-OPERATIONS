@@ -26,7 +26,7 @@ import hashlib
 from logging.handlers import RotatingFileHandler
 from urllib.parse import quote
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Windows-specific imports (graceful fallback for Linux/Mac)
 try:
@@ -34,7 +34,7 @@ try:
     OUTLOOK_AVAILABLE = True
 except ImportError:
     OUTLOOK_AVAILABLE = False
-    print("âš ï¸ pywin32 not available - running in demo mode")
+    print("[WARN] pywin32 not available - running in demo mode")
 
 # ==================== CONFIGURATION ====================
 CONFIG = {
@@ -139,6 +139,7 @@ _hot_config_state = {
     "manager_config": {"seen_fp": None, "seen_sha": None, "lkg": None, "lkg_sha": None},
     "system_buckets": {"seen_fp": None, "seen_sha": None, "lkg": None, "lkg_sha": None},
 }
+
 
 
 def _read_int_env(name, default, minimum):
@@ -293,6 +294,24 @@ def determine_safe_mode(inbox_folder, mailbox_value=None, processed_folder=None)
 
     Returns: (is_safe, reason, live_test_override)
     """
+    env_value = os.environ.get("TRANSFER_BOT_LIVE", "").strip().lower()
+    if env_value != "true":
+        return (True, "env_missing", False)
+
+    if _is_live_sami_production_target(mailbox_value, inbox_folder, processed_folder):
+        return (False, "live_mode_armed", False)
+
+    inbox_value = inbox_folder or ""
+    if "test" in inbox_value.lower():
+        test_ok = os.environ.get("TRANSFER_BOT_ALLOW_TEST_FOLDER", "").strip().lower()
+        if test_ok != "true":
+            legacy_ok = os.environ.get("TRANSFER_BOT_LIVE_TEST_OK", "").strip().lower()
+            if legacy_ok == "true":
+                test_ok = "true"
+        if test_ok == "true":
+            return (False, "live_test_override", True)
+        return (True, "test_folder", False)
+
     return (False, "live_mode_armed", False)
 
 def is_safe_mode():
@@ -303,11 +322,33 @@ def is_safe_mode():
         is_safe: True if SAFE_MODE active (no sending)
         reason: String explaining why SAFE_MODE is active
     """
-    return (False, "live_mode_armed")
+    if _safe_mode_cache is not None:
+        return _safe_mode_cache
+    is_safe, reason, _ = determine_safe_mode(
+        CONFIG.get("inbox_folder", ""),
+        CONFIG.get("mailbox", ""),
+        CONFIG.get("processed_folder", ""),
+    )
+    return (is_safe, reason)
 
 def log_safe_mode_status(inbox_folder=None):
     """Log SAFE_MODE status"""
-    log_once("live_mode_armed", "LIVE_MODE_ARMED - emails will be sent", "WARN")
+    inbox_value = inbox_folder if inbox_folder is not None else CONFIG.get("inbox_folder", "")
+    is_safe, reason, override_active = determine_safe_mode(
+        inbox_value,
+        CONFIG.get("mailbox", ""),
+        CONFIG.get("processed_folder", ""),
+    )
+    if override_active:
+        log(f"LIVE_TEST_OVERRIDE_ENABLED inbox_folder={inbox_value}", "INFO")
+    if is_safe:
+        if reason == "env_missing":
+            log("SAFE_MODE_ACTIVE reason=env_missing (TRANSFER_BOT_LIVE not set to 'true')", "WARN")
+        elif reason == "test_folder":
+            log(f"SAFE_MODE_ACTIVE reason=test_folder inbox_folder={inbox_value} (set TRANSFER_BOT_ALLOW_TEST_FOLDER=true to allow)", "WARN")
+        log("*** NO EMAILS WILL BE SENT IN SAFE_MODE ***", "WARN")
+    else:
+        log_once("live_mode_armed", "LIVE_MODE_ARMED - emails will be sent", "WARN")
 
 # ==================== SEMANTIC DICTIONARY ====================
 # Risk Detection: (Action + Context) OR (Urgency + Action) OR (High Importance)
@@ -848,19 +889,7 @@ def resolve_reply_chain_completion_match(ledger, sender_email, conversation_id, 
     return match_key, subject_sami, "unique_conversation_sender", ""
 
 
-def _move_completion_artifact(msg, target_store, completed_dest, processed):
-    msg.UnRead = False
-    _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
-    if not _sb_ok:
-        return False, _sb_actual
-    if completed_dest:
-        msg.Move(completed_dest)
-    else:
-        msg.Move(processed)
-    return True, _sb_actual
-
-
-def finalize_matched_completion(msg, match_key, sender_email, subject, processed_ledger, target_store, completed_dest, processed,
+def finalize_matched_completion(msg, match_key, sender_email, subject, processed_ledger, target_store, processed,
         domain_bucket, policy_source, completion_source, resolved_sami_id=""):
     entry = processed_ledger.get(match_key, {})
     if not isinstance(entry, dict):
@@ -875,12 +904,15 @@ def finalize_matched_completion(msg, match_key, sender_email, subject, processed
     if not save_processed_ledger(processed_ledger):
         log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
         return False
-    _moved_ok, _sb_actual = _move_completion_artifact(msg, target_store, completed_dest, processed)
-    if not _moved_ok:
+    msg.UnRead = False
+    _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+    if not _sb_ok:
         log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
         append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
         return True
+    msg.Move(processed)
     return True
+
 def compute_message_identity(msg, sender_email, subject, received_iso):
     entry_id = None
     store_id = None
@@ -1231,7 +1263,7 @@ def _parse_system_buckets_json(obj):
     if err:
         return None, err
 
-    # Optional sender override lists (backward compatible â€” missing keys default to [])
+    # Optional sender override lists (backward compatible — missing keys default to [])
     def _parse_senders(key):
         raw = obj.get(key)
         if raw is None:
@@ -1484,13 +1516,25 @@ def _resolve_stale_reloop_runtime():
         return None, None, ""
 
 def _get_stale_reloop_business_context(now_local=None, overrides=None):
-    tz = ZoneInfo("Australia/Adelaide")
-    if now_local is None:
-        now_local = datetime.now(tz)
-    elif now_local.tzinfo is None:
-        now_local = now_local.replace(tzinfo=tz)
+    tz_name = "Australia/Adelaide"
+    tz = None
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        log_once("stale_reloop_tz_fallback", f"STALE_RELOOP_TZ_FALLBACK tz={tz_name} source=local_time", "WARN")
+
+    if tz is not None:
+        if now_local is None:
+            now_local = datetime.now(tz)
+        elif now_local.tzinfo is None:
+            now_local = now_local.replace(tzinfo=tz)
+        else:
+            now_local = now_local.astimezone(tz)
     else:
-        now_local = now_local.astimezone(tz)
+        if now_local is None:
+            now_local = datetime.now()
+        elif now_local.tzinfo is not None:
+            now_local = now_local.astimezone().replace(tzinfo=None)
 
     start_raw = "08:00"
     end_raw = "17:00"
@@ -1822,7 +1866,7 @@ def process_stale_assignment_reloop():
             log(f"STALE_RELOOP_ITEM_NOT_FOUND key={ledger_key}", "WARN")
             changed = True
             continue
-        new_assignee = _get_next_stale_staff_excluding_owner(assigned_to)
+        new_assignee = get_next_staff()
         if not new_assignee:
             log(f"STALE_RELOOP_SKIP key={ledger_key} reason=no_staff_available", "WARN")
             continue
@@ -2018,7 +2062,7 @@ def process_manual_stale_requests():
             log(f"MANUAL_STALE_SKIP request_id={request_id} key={ledger_key} reason=item_not_found", "WARN")
             continue
 
-        new_assignee = _get_next_stale_staff_excluding_owner(assigned_to)
+        new_assignee = get_next_staff()
         if not new_assignee:
             skipped += 1
             remaining.pop(request_key, None)
@@ -2588,9 +2632,9 @@ def classify_sender(sender_email, sender_domain, policy):
     Unified sender classification: exact sender match first, then domain match.
 
     Returns (bucket, match_level) if an explicit policy bucket matches,
-    or (None, None) if no match â€” caller falls back to existing internal/unknown logic.
+    or (None, None) if no match — caller falls back to existing internal/unknown logic.
 
-    Priority (explicit, deterministic â€” no dict iteration):
+    Priority (explicit, deterministic — no dict iteration):
       1. quarantine  (sender, then domain)
       2. hold        (sender, then domain)
       3. system_notification (sender, then domain)
@@ -2696,7 +2740,7 @@ def get_sender_override_bucket(sender_email, policy):
         return "applications_direct"
     return None
 
-# Superseded by classify_sender() for process_inbox routing â€” kept for backward compatibility.
+# Superseded by classify_sender() for process_inbox routing — kept for backward compatibility.
 def classify_sender_domain(domain, policy):
     """
     Classify sender domain based on policy.
@@ -2770,7 +2814,7 @@ def send_manager_hold_notification(outlook_app, manager_email, original_msg, rea
             subject = original_msg.Subject or ""
         except Exception:
             subject = ""
-        mail.Subject = f"HOLD â€“ Unknown Domain: {subject}"
+        mail.Subject = f"HOLD – Unknown Domain: {subject}"
         try:
             sender_email = original_msg.SenderEmailAddress or ""
         except Exception:
@@ -2882,31 +2926,6 @@ def get_next_staff():
     
     return person
 
-def _get_next_stale_staff_excluding_owner(current_owner):
-    staff = _staff_list_cache if _staff_list_cache is not None else get_staff_list()
-    normalized = [s.strip() for s in staff if isinstance(s, str) and s.strip()]
-    if not normalized:
-        return None
-
-    state = get_roster_state()
-    idx = state.get("current_index", 0)
-    owner_lower = str(current_owner or "").strip().lower()
-
-    if len(normalized) > 1:
-        for offset in range(len(normalized)):
-            candidate = normalized[(idx + offset) % len(normalized)]
-            if candidate.lower() != owner_lower:
-                state["current_index"] = idx + offset + 1
-                state["total_processed"] = state.get("total_processed", 0) + 1
-                save_roster_state(state)
-                return candidate
-
-    candidate = normalized[idx % len(normalized)]
-    state["current_index"] = idx + 1
-    state["total_processed"] = state.get("total_processed", 0) + 1
-    save_roster_state(state)
-    return candidate
-
 def append_stats(subject, assigned_to, sender="unknown", risk_level="normal", domain_bucket="", action="", policy_source="", event_type="", msg_key="", status_after="", assigned_ts="", completed_ts="", duration_sec="", sami_id=""):
     """Append entry to daily stats CSV with full 16-column schema"""
     try:
@@ -2998,7 +3017,7 @@ def process_reassign_queue():
     Governance rules:
     - processed_ledger.json is READ-ONLY (no mutation)
     - get_next_staff() is NOT called (no rotation pointer mutation)
-    - No Outlook interaction â€” pure file I/O
+    - No Outlook interaction — pure file I/O
     - Appends REASSIGN_MANUAL event to CSV via append_stats()
     """
     queue = safe_load_json(REASSIGN_QUEUE_PATH, [], state_name="reassign_queue")
@@ -3013,7 +3032,7 @@ def process_reassign_queue():
         return
 
     staff_set = set(s.lower() for s in staff_list)
-    ledger = load_processed_ledger()  # READ-ONLY â€” never saved back
+    ledger = load_processed_ledger()  # READ-ONLY — never saved back
     remaining = []
     processed_count = 0
 
@@ -3235,7 +3254,7 @@ def remove_from_watchdog(msg_id, overrides):
     if msg_id in watchdog:
         del watchdog[msg_id]
         save_watchdog(watchdog, overrides)
-        log(f"âœ… Removed from watchdog: {msg_id}", "SUCCESS")
+        log(f"Removed from watchdog: {msg_id}", "SUCCESS")
 
 # ==================== RISK DETECTION ====================
 def detect_risk(subject, body="", high_importance=False):
@@ -3437,16 +3456,16 @@ def is_jones_completion_notification(msg):
 def build_unknown_notice_block():
     return (
         "\n\n"
-        "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€\n"
-        "Automated notice â€“ action required\n\n"
+        "--------------------------------\n"
+        "Automated notice – action required\n\n"
         "This message was held because the sender or domain is not currently approved.\n\n"
         "If this sender/domain should be:\n"
-        "â€¢ approved for normal distribution, or\n"
-        "â€¢ routed to a specific team (e.g. Apps visibility), or\n"
-        "â€¢ left on hold,\n\n"
+        "• approved for normal distribution, or\n"
+        "• routed to a specific team (e.g. Apps visibility), or\n"
+        "• left on hold,\n\n"
         "please email the system administrator with your decision.\n\n"
         "(Do not include patient or clinical information in your reply.)\n"
-        "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€\n"
+        "--------------------------------\n"
     )
 
 # ==================== SLA WATCHDOG CHECK ====================
@@ -3473,12 +3492,12 @@ def check_sla_breaches(overrides):
             
             if elapsed > sla_limit:
                 # SLA BREACH!
-                log(f"ðŸš¨ SLA BREACH: {ticket['subject'][:50]}... ({elapsed.seconds // 60}m elapsed)", "CRITICAL")
+                log(f"SLA BREACH: {ticket['subject'][:50]}... ({elapsed.seconds // 60}m elapsed)", "CRITICAL")
                 
                 # Re-assign to next staff member
                 new_assignee = get_next_staff()
                 if new_assignee and new_assignee != ticket["assigned_to"]:
-                    log(f"ðŸ”„ Re-assigning from {ticket['assigned_to']} to {new_assignee}", "WARN")
+                    log(f"Re-assigning from {ticket['assigned_to']} to {new_assignee}", "WARN")
                 
                 # Escalate to manager (would send email in real implementation)
                 escalate_to_manager(ticket, elapsed)
@@ -3507,7 +3526,7 @@ def check_sla_breaches(overrides):
 def escalate_to_manager(ticket, elapsed):
     """Send escalation email to manager"""
     manager = CONFIG["manager"]
-    log(f"ðŸ“§ Escalating to manager ({manager}): {ticket['subject'][:30]}...", "CRITICAL")
+    log(f"Escalating to manager ({manager}): {ticket['subject'][:30]}...", "CRITICAL")
     
     # In production, this would send an actual email
     # For now, we log the escalation
@@ -3925,7 +3944,7 @@ def process_inbox():
                     sender_domain = extract_sender_domain(sender_email)
                     domain_bucket, match_level = classify_sender(sender_email, sender_domain, domain_policy)
                     if domain_bucket is None:
-                        # No explicit policy match â€” fall through to existing internal/unknown logic
+                        # No explicit policy match — fall through to existing internal/unknown logic
                         domain_bucket = classify_sender_domain(sender_domain, domain_policy) if sender_domain else "unknown"
                         # Only set match_level for explicit policy buckets, not defaults
                         if domain_bucket in ("quarantine", "hold", "system_notification", "external_image_request", "applications_direct"):
@@ -4126,7 +4145,6 @@ def process_inbox():
                                         subject,
                                         processed_ledger,
                                         target_store,
-                                        completed_dest,
                                         processed,
                                         domain_bucket,
                                         policy_source,
@@ -4430,8 +4448,6 @@ def process_inbox():
                                     domain_bucket,
                                     "COMPLETION_SUBJECT_KEYWORD",
                                     policy_source,
-                                    event_type="COMPLETED",
-                                    msg_key=match_key,
                                     sami_id=resolved_sami_id or processed_ledger.get(match_key, {}).get("sami_id", "")
                                 )
                                 if not finalize_matched_completion(
@@ -4441,7 +4457,6 @@ def process_inbox():
                                     subject,
                                     processed_ledger,
                                     target_store,
-                                    completed_dest,
                                     processed,
                                     domain_bucket,
                                     policy_source,
@@ -4453,7 +4468,7 @@ def process_inbox():
                                 processed_count += 1
                                 continue
                             else:
-                                # Staff [COMPLETED] with no prior ledger entry â€” bypass quarantine
+                                # Staff [COMPLETED] with no prior ledger entry — bypass quarantine
                                 log(f"BYPASS_QUARANTINE_STAFF_COMPLETED_CONFIRMATION msg_id={msg_id} sender={sender_email}", "INFO")
                                 processed_ledger[message_key] = {
                                     "ts": datetime.now().isoformat(),
@@ -4513,10 +4528,13 @@ def process_inbox():
                                 log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
                                 errors_count += 1
                                 continue
-                            _moved_ok, _sb_actual = _move_completion_artifact(msg, target_store, completed_dest, processed)
-                        if not _moved_ok:
-                            log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
-                            append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+                            msg.UnRead = False
+                            _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                            if not _sb_ok:
+                                log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
+                                append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+                            else:
+                                msg.Move(processed)
                             processed_count += 1
                             continue
                     except Exception as e:
@@ -4537,10 +4555,13 @@ def process_inbox():
                             sami_id=_err_sami,
                         )
                         try:
-                            _moved_ok, _sb_actual = _move_completion_artifact(msg, target_store, completed_dest, processed)
-                            if not _moved_ok:
+                            msg.UnRead = False
+                            _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                            if not _sb_ok:
                                 log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
                                 append_stats(subject, "skipped", sender_email, "COMPLETION_ERROR", domain_bucket, "WRONG_MAILBOX", policy_source)
+                            else:
+                                msg.Move(processed)
                         except Exception:
                             pass
                         processed_count += 1
@@ -4583,10 +4604,13 @@ def process_inbox():
                             log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
                             errors_count += 1
                             continue
-                        _moved_ok, _sb_actual = _move_completion_artifact(msg, target_store, completed_dest, processed)
-                        if not _moved_ok:
+                        msg.UnRead = False
+                        _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                        if not _sb_ok:
                             log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
                             append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+                        else:
+                            msg.Move(processed)
                         processed_count += 1
                         continue
 
@@ -4612,10 +4636,13 @@ def process_inbox():
                             log("STATE_WRITE_FAIL state=processed_ledger", "ERROR")
                             errors_count += 1
                             continue
-                        _moved_ok, _sb_actual = _move_completion_artifact(msg, target_store, completed_dest, processed)
-                        if not _moved_ok:
+                        msg.UnRead = False
+                        _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                        if not _sb_ok:
                             log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
                             append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+                        else:
+                            msg.Move(processed)
                         processed_count += 1
                         continue
 
@@ -4781,10 +4808,13 @@ def process_inbox():
                             event_type="COMPLETED",
                             sami_id=_ic_sami,
                         )
-                        _moved_ok, _sb_actual = _move_completion_artifact(msg, target_store, completed_dest, processed)
-                        if not _moved_ok:
+                        msg.UnRead = False
+                        _sb_ok, _sb_actual = check_msg_mailbox_store(msg, target_store)
+                        if not _sb_ok:
                             log(f"WRONG_MAILBOX expected={target_store} actual={_sb_actual}", "WARN")
                             append_stats(subject, "skipped", sender_email, "normal", domain_bucket, "WRONG_MAILBOX", policy_source)
+                        else:
+                            msg.Move(processed)
 
                         processed_ledger[message_key] = {
                             "ts": datetime.now().isoformat(),
@@ -4820,7 +4850,7 @@ def process_inbox():
                     archive_identity = identity
 
                     if domain_bucket == "system_notification":
-                        # Silent move to system_notification folder â€” no email sent
+                        # Silent move to system_notification folder — no email sent
                         if is_jones_completion_notification(msg):
                             log("FILTER_JONES_COMPLETION action=move_processed", "INFO")
                         else:
@@ -5045,7 +5075,7 @@ def process_inbox():
                     if action_taken != "hib_noise_suppressed":
                         log(f"ASSIGNED msg_id={msg_id} risk={risk_level}", "INFO")
 
-                    # Assignment audit only â€” the untouched recovery anchor is already in processed
+                    # Assignment audit only — the untouched recovery anchor is already in processed
                     # Set event_type=ASSIGNED when assignee is staff (contains @ and not system/bot)
                     _non_staff = {"bot", "completed", "error", "hib", "hold", "manager_review",
                                   "non_actionable", "quarantined", "skipped", "system_notification"}
@@ -5271,7 +5301,7 @@ if __name__ == "__main__":
         sys.exit(0)
     atexit.register(release_lock)
     log("=" * 60)
-    log("ðŸ¥ Helpdesk Clinical Safety Bot v2.2")
+    log("Helpdesk Clinical Safety Bot v2.2")
     log("=" * 60)
     overrides = load_settings_overrides(SETTINGS_OVERRIDES_PATH)
     manager_override = get_override_addr(overrides, "manager_cc_addr")
@@ -5303,7 +5333,7 @@ if __name__ == "__main__":
     # Schedule to run every minute
     schedule.every(CONFIG["check_interval_seconds"]).seconds.do(run_job)
     
-    log("ðŸ”„ Entering main loop (Ctrl+C to stop)")
+    log("Entering main loop (Ctrl+C to stop)")
     
     while True:
         try:
