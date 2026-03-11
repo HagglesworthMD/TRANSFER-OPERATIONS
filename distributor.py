@@ -48,6 +48,7 @@ CONFIG = {
     "enable_completion_cc": False,
     "enable_completion_workflow": False,
     "enable_reply_chain_completion": False,
+    "auto_stale_reloop_enabled": False,
     "quarantine_folder": "Inbox/03_QUARANTINE",
     "completed_folder": "Inbox/01_COMPLETED"
 }
@@ -272,6 +273,7 @@ ALLOWED_OVERRIDES = {
     "target_mailbox_store": lambda v: isinstance(v, str) and v.strip(),
     "disable_urgent_watchdog": lambda v: isinstance(v, bool),
     "enable_reply_chain_completion": lambda v: isinstance(v, bool),
+    "auto_stale_reloop_enabled": lambda v: isinstance(v, bool),
     "stale_reloop_business_start": is_valid_hhmm,
     "stale_reloop_business_end": is_valid_hhmm,
 }
@@ -5260,12 +5262,24 @@ def process_inbox():
 def run_job():
     """Main job: Process inbox + stale reloop + manual stale queue + reassign queue"""
     stale_mailbox_ok = True
+    overrides = load_settings_overrides(SETTINGS_OVERRIDES_PATH) or {}
+    auto_stale_reloop_enabled = overrides.get(
+        "auto_stale_reloop_enabled",
+        CONFIG.get("auto_stale_reloop_enabled", False),
+    )
+    log_state_change(
+        "auto_stale_reloop_enabled",
+        bool(auto_stale_reloop_enabled),
+        f"STALE_RELOOP_AUTO_{'ENABLED' if auto_stale_reloop_enabled else 'DISABLED'}",
+        "INFO",
+    )
     # Run stale pass first so reloop guard can suppress same-tick reassignment.
-    try:
-        stale_mailbox_ok = process_stale_assignment_reloop()
-    except Exception as e:
-        stale_mailbox_ok = False
-        log(f"Error in process_stale_assignment_reloop: {e}", "ERROR")
+    if auto_stale_reloop_enabled:
+        try:
+            stale_mailbox_ok = process_stale_assignment_reloop()
+        except Exception as e:
+            stale_mailbox_ok = False
+            log(f"Error in process_stale_assignment_reloop: {e}", "ERROR")
     if stale_mailbox_ok is False:
         append_stats(
             subject="",
