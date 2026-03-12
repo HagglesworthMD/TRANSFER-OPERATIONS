@@ -294,6 +294,7 @@ class AssignmentArchiveRecoveryTests(unittest.TestCase):
             "logs": [],
             "archived_item": None,
             "send_error": send_error,
+            "get_next_staff_calls": 0,
         }
         folders = self._make_folders(observed)
         mailbox = folders["mailbox"]
@@ -325,6 +326,10 @@ class AssignmentArchiveRecoveryTests(unittest.TestCase):
         def _log(msg, *_args, **_kwargs):
             observed["logs"].append(str(msg))
 
+        def _get_next_staff():
+            observed["get_next_staff_calls"] += 1
+            return "brian.shaw@sa.gov.au"
+
         patches = [
             patch.object(distributor, "OUTLOOK_AVAILABLE", True),
             patch.object(distributor, "win32com", win32_stub, create=True),
@@ -340,8 +345,15 @@ class AssignmentArchiveRecoveryTests(unittest.TestCase):
             patch.object(distributor, "ensure_processed_ledger_exists", return_value=True),
             patch.object(distributor, "load_processed_ledger", return_value={}),
             patch.object(distributor, "save_processed_ledger", side_effect=_save_processed_ledger),
+            patch.object(distributor, "load_poison_counts", return_value={}),
+            patch.object(distributor, "save_poison_counts", return_value=True),
             patch.object(distributor, "append_stats", side_effect=self._stats_recorder(observed)),
-            patch.object(distributor, "get_next_staff", return_value="brian.shaw@sa.gov.au"),
+            patch.object(distributor, "get_next_staff", side_effect=_get_next_staff),
+            patch.object(
+                distributor,
+                "_get_normal_assignment_business_context",
+                return_value=(datetime(2026, 3, 10, 9, 0), True, None),
+            ),
             patch.object(distributor, "inject_completion_hotlink", return_value=False),
             patch.object(distributor, "send_manager_hold_notification", return_value=True),
             patch.object(distributor, "detect_risk", return_value=("normal", None)),
@@ -412,6 +424,101 @@ class AssignmentArchiveRecoveryTests(unittest.TestCase):
         self.assertIsNone(result["ledger"])
         self.assertIsNone(result["original"].moved_to)
         self.assertIs(result["original"].Parent, result["inbox"])
+
+    def test_business_hours_skip_leaves_original_in_inbox_without_round_robin_or_ledger_entry(self):
+        observed = {
+            "stats": [],
+            "forwards": [],
+            "send_calls": 0,
+            "moves": [],
+            "events": [],
+            "saved_ledgers": [],
+            "identity_map": {},
+            "processed_move_count": 0,
+            "logs": [],
+            "archived_item": None,
+            "send_error": None,
+            "get_next_staff_calls": 0,
+        }
+        folders = self._make_folders(observed)
+        mailbox = folders["mailbox"]
+        inbox = folders["inbox"]
+        original = DummyMessage(
+            observed,
+            inbox,
+            "someone@bensonradiology.com.au",
+            "Image transfer request",
+            "Original body",
+            entry_id="INBOX-1",
+        )
+        inbox.Items = DummyItems([original])
+        namespace = DummyNamespace(mailbox, observed)
+        outlook = DummyOutlookApp(namespace)
+        win32_stub = SimpleNamespace(client=SimpleNamespace(Dispatch=lambda _name: outlook))
+
+        def _save_processed_ledger(data):
+            observed["saved_ledgers"].append(copy.deepcopy(data))
+            return True
+
+        def _log(msg, *_args, **_kwargs):
+            observed["logs"].append(str(msg))
+
+        def _get_next_staff():
+            observed["get_next_staff_calls"] += 1
+            return "brian.shaw@sa.gov.au"
+
+        patches = [
+            patch.object(distributor, "OUTLOOK_AVAILABLE", True),
+            patch.object(distributor, "win32com", win32_stub, create=True),
+            patch.object(distributor, "find_mailbox_root_robust", return_value=mailbox),
+            patch.object(distributor, "resolve_folder", side_effect=self._resolve_folder_factory(folders)),
+            patch.object(distributor, "get_or_create_subfolder", side_effect=lambda _parent, path: folders["quarantine"] if "03_QUARANTINE" in path else folders["hib"]),
+            patch.object(distributor, "get_folder_path_safe", side_effect=lambda folder: folder.FolderPath if folder else ""),
+            patch.object(distributor, "check_msg_mailbox_store", return_value=(True, "UnitTest Mailbox")),
+            patch.object(distributor, "load_settings_overrides", return_value={}),
+            patch.object(distributor, "load_config_files_each_tick", return_value=(self._hot_cfg(), [])),
+            patch.object(distributor, "load_domain_policy", return_value=(self._domain_policy(), True)),
+            patch.object(distributor, "get_staff_list", return_value=["brian.shaw@sa.gov.au"]),
+            patch.object(distributor, "ensure_processed_ledger_exists", return_value=True),
+            patch.object(distributor, "load_processed_ledger", return_value={}),
+            patch.object(distributor, "save_processed_ledger", side_effect=_save_processed_ledger),
+            patch.object(distributor, "load_poison_counts", return_value={}),
+            patch.object(distributor, "save_poison_counts", return_value=True),
+            patch.object(distributor, "append_stats", side_effect=self._stats_recorder(observed)),
+            patch.object(distributor, "get_next_staff", side_effect=_get_next_staff),
+            patch.object(
+                distributor,
+                "_get_normal_assignment_business_context",
+                return_value=(datetime(2026, 3, 9, 10, 0), False, "public_holiday"),
+            ),
+            patch.object(distributor, "inject_completion_hotlink", return_value=False),
+            patch.object(distributor, "send_manager_hold_notification", return_value=True),
+            patch.object(distributor, "detect_risk", return_value=("normal", None)),
+            patch.object(distributor, "is_hib_notification", return_value=False),
+            patch.object(distributor, "hib_contains_16110", return_value=False),
+            patch.object(distributor, "hib_contains_16111", return_value=False),
+            patch.object(distributor, "is_jira_candidate", return_value=False),
+            patch.object(distributor, "is_jira_comment_email", return_value=False),
+            patch.object(distributor, "is_staff_completed_confirmation", return_value=False),
+            patch.object(distributor, "is_jones_completion_notification", return_value=False),
+            patch.object(distributor, "maybe_emit_heartbeat", return_value=None),
+            patch.object(distributor, "log_safe_mode_status", return_value=None),
+            patch.object(distributor, "log", side_effect=_log),
+            patch.object(distributor, "determine_safe_mode", return_value=(False, "unit_test", False)),
+        ]
+        with ExitStack() as stack:
+            for active in patches:
+                stack.enter_context(active)
+            distributor.process_inbox()
+
+        self.assertEqual(observed["get_next_staff_calls"], 0)
+        self.assertEqual(observed["send_calls"], 0)
+        self.assertEqual(observed["moves"], [])
+        self.assertEqual(observed["saved_ledgers"], [])
+        self.assertTrue(original.UnRead)
+        self.assertIsNone(original.moved_to)
+        self.assertIs(original.Parent, inbox)
+        self.assertTrue(any("BUSINESS_HOURS_SKIP" in msg and "reason=public_holiday" in msg for msg in observed["logs"]))
 
     def test_resolve_mailitem_from_ledger_entry_returns_processed_archive_item(self):
         result = self._run_assignment()

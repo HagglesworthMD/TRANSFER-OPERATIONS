@@ -296,6 +296,11 @@ class ReloopSameTickGuardTests(unittest.TestCase):
             patch.object(distributor, "save_processed_ledger", side_effect=_save_processed_ledger),
             patch.object(distributor, "append_stats", side_effect=self._stats_recorder(observed)),
             patch.object(distributor, "get_next_staff", side_effect=_get_next_staff),
+            patch.object(
+                distributor,
+                "_get_normal_assignment_business_context",
+                return_value=(datetime(2026, 3, 10, 9, 0), True, None),
+            ),
             patch.object(distributor, "inject_completion_hotlink", return_value=False),
             patch.object(distributor, "send_manager_hold_notification", return_value=True),
             patch.object(distributor, "detect_risk", return_value=("normal", None)),

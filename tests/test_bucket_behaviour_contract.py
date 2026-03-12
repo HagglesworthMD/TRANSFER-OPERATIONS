@@ -316,6 +316,11 @@ class BucketBehaviourContractTests(unittest.TestCase):
             patch.object(distributor, "save_processed_ledger", side_effect=_save_processed_ledger),
             patch.object(distributor, "append_stats", side_effect=self._stats_recorder(observed)),
             patch.object(distributor, "get_next_staff", side_effect=_get_next_staff),
+            patch.object(
+                distributor,
+                "_get_normal_assignment_business_context",
+                return_value=(distributor.datetime(2026, 3, 10, 9, 0), True, None),
+            ),
             patch.object(distributor, "inject_completion_hotlink", side_effect=_inject_completion_hotlink),
             patch.object(distributor, "send_manager_hold_notification", side_effect=_send_manager_hold_notification),
             patch.object(distributor, "detect_risk", return_value=("normal", None)),

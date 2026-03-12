@@ -20,6 +20,46 @@ class _DummyMailItem:
 
 
 class StaleReloopTests(unittest.TestCase):
+    def test_normal_assignment_business_context_allows_weekday_in_window(self):
+        _now_local, allowed, reason = distributor._get_normal_assignment_business_context(datetime(2026, 3, 10, 9, 0))
+        self.assertTrue(allowed)
+        self.assertIsNone(reason)
+
+    def test_normal_assignment_business_context_blocks_before_open(self):
+        _now_local, allowed, reason = distributor._get_normal_assignment_business_context(datetime(2026, 3, 10, 8, 29))
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "outside_hours")
+
+    def test_normal_assignment_business_context_blocks_at_close(self):
+        _now_local, allowed, reason = distributor._get_normal_assignment_business_context(datetime(2026, 3, 10, 17, 0))
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "outside_hours")
+
+    def test_normal_assignment_business_context_blocks_weekend(self):
+        _now_local, allowed, reason = distributor._get_normal_assignment_business_context(datetime(2026, 3, 14, 10, 0))
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "outside_hours")
+
+    def test_normal_assignment_business_context_blocks_march_holiday(self):
+        _now_local, allowed, reason = distributor._get_normal_assignment_business_context(datetime(2026, 3, 9, 10, 0))
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "public_holiday")
+
+    def test_normal_assignment_business_context_blocks_october_holiday(self):
+        _now_local, allowed, reason = distributor._get_normal_assignment_business_context(datetime(2026, 10, 5, 10, 0))
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "public_holiday")
+
+    def test_normal_assignment_business_context_allows_christmas_eve_daytime(self):
+        _now_local, allowed, reason = distributor._get_normal_assignment_business_context(datetime(2026, 12, 24, 10, 0))
+        self.assertTrue(allowed)
+        self.assertIsNone(reason)
+
+    def test_normal_assignment_business_context_allows_new_years_eve_daytime(self):
+        _now_local, allowed, reason = distributor._get_normal_assignment_business_context(datetime(2026, 12, 31, 10, 0))
+        self.assertTrue(allowed)
+        self.assertIsNone(reason)
+
     def _base_ledger_entry(self, hours_ago=13, **overrides):
         entry = {
             "assigned_to": "alice@test.com",
@@ -62,7 +102,8 @@ class StaleReloopTests(unittest.TestCase):
         mock_save.assert_not_called()
 
     @patch("distributor.log")
-    @patch("distributor.get_next_staff", return_value="a@test.com")
+    @patch("distributor._get_stale_reloop_business_context", return_value=(datetime(2026, 3, 11, 10, 0), True, None))
+    @patch("distributor._get_next_stale_staff_excluding_owner", return_value="a@test.com")
     @patch("distributor._forward_stale_reassign_in_place", return_value=True)
     @patch("distributor._resolve_mailitem_from_ledger_entry")
     @patch("distributor._resolve_stale_reloop_runtime")
@@ -72,7 +113,7 @@ class StaleReloopTests(unittest.TestCase):
     @patch("distributor.get_staff_list")
     @patch("distributor._get_known_staff_for_stale_reloop")
     def test_stale_item_reassigns_in_place_and_updates_ledger(
-        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_next_staff, mock_log
+        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_next_staff, _mock_business_hours, mock_log
     ):
         mock_known_staff.return_value = {"z@test.com", "a@test.com", "m@test.com"}
         mock_staff.return_value = ["z@test.com", "a@test.com", "m@test.com"]
@@ -104,7 +145,123 @@ class StaleReloopTests(unittest.TestCase):
         mock_save.assert_called_once()
 
     @patch("distributor.log")
-    @patch("distributor.get_next_staff", return_value="brian.shaw@sa.gov.au")
+    @patch("distributor._get_stale_reloop_business_context", return_value=(datetime(2026, 3, 10, 18, 30), False, "outside_business_hours"))
+    @patch("distributor._forward_stale_reassign_in_place", return_value=True)
+    @patch("distributor._resolve_mailitem_from_ledger_entry")
+    @patch("distributor._resolve_stale_reloop_runtime")
+    @patch("distributor.append_stats")
+    @patch("distributor.save_processed_ledger")
+    @patch("distributor.load_processed_ledger")
+    @patch("distributor.get_staff_list")
+    @patch("distributor._get_known_staff_for_stale_reloop")
+    def test_stale_reloop_deferred_after_hours_leaves_state_unchanged(
+        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_business_hours, mock_log
+    ):
+        mock_known_staff.return_value = {"z@test.com", "a@test.com", "m@test.com"}
+        mock_staff.return_value = ["z@test.com", "a@test.com", "m@test.com"]
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
+        original_entry = self._base_ledger_entry(
+            assigned_to="m@test.com",
+            sami_id="SAMI-301",
+        )
+        mock_load.return_value = {"k1": dict(original_entry)}
+
+        distributor.process_stale_assignment_reloop()
+
+        self.assertEqual(mock_load.return_value["k1"], original_entry)
+        mock_resolve_item.assert_not_called()
+        mock_stats.assert_not_called()
+        mock_save.assert_not_called()
+        log_messages = [call.args[0] for call in mock_log.call_args_list]
+        self.assertIn("STALE_RELOOP_DEFERRED reason=outside_business_hours key=k1", log_messages)
+
+    @patch("distributor.log")
+    @patch("distributor._get_stale_reloop_business_context", return_value=(datetime(2026, 3, 14, 10, 0), False, "weekend"))
+    @patch("distributor._forward_stale_reassign_in_place", return_value=True)
+    @patch("distributor._resolve_mailitem_from_ledger_entry")
+    @patch("distributor._resolve_stale_reloop_runtime")
+    @patch("distributor.append_stats")
+    @patch("distributor.save_processed_ledger")
+    @patch("distributor.load_processed_ledger")
+    @patch("distributor.get_staff_list")
+    @patch("distributor._get_known_staff_for_stale_reloop")
+    def test_stale_reloop_deferred_on_weekend_leaves_state_unchanged(
+        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_business_hours, mock_log
+    ):
+        mock_known_staff.return_value = {"z@test.com", "a@test.com", "m@test.com"}
+        mock_staff.return_value = ["z@test.com", "a@test.com", "m@test.com"]
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
+        original_entry = self._base_ledger_entry(
+            assigned_to="m@test.com",
+            sami_id="SAMI-302",
+        )
+        mock_load.return_value = {"k1": dict(original_entry)}
+
+        distributor.process_stale_assignment_reloop()
+
+        self.assertEqual(mock_load.return_value["k1"], original_entry)
+        mock_resolve_item.assert_not_called()
+        mock_stats.assert_not_called()
+        mock_save.assert_not_called()
+        log_messages = [call.args[0] for call in mock_log.call_args_list]
+        self.assertIn("STALE_RELOOP_DEFERRED reason=weekend key=k1", log_messages)
+
+    @patch("distributor.log")
+    @patch("distributor._get_stale_reloop_business_context")
+    @patch("distributor._get_next_stale_staff_excluding_owner", return_value="a@test.com")
+    @patch("distributor._forward_stale_reassign_in_place", return_value=True)
+    @patch("distributor._resolve_mailitem_from_ledger_entry")
+    @patch("distributor._resolve_stale_reloop_runtime")
+    @patch("distributor.append_stats")
+    @patch("distributor.save_processed_ledger")
+    @patch("distributor.load_processed_ledger")
+    @patch("distributor.get_staff_list")
+    @patch("distributor._get_known_staff_for_stale_reloop")
+    def test_stale_reloop_deferred_after_hours_then_reloops_next_business_tick(
+        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_next_staff, mock_business_hours, mock_log
+    ):
+        mock_known_staff.return_value = {"z@test.com", "a@test.com", "m@test.com"}
+        mock_staff.return_value = ["z@test.com", "a@test.com", "m@test.com"]
+        mock_runtime.return_value = (object(), _DummyProcessed(), "")
+        dummy_item = _DummyMailItem()
+        original_ts = (datetime.now() - timedelta(hours=13)).isoformat()
+        ledger = {
+            "k1": self._base_ledger_entry(
+                ts=original_ts,
+                assigned_to="m@test.com",
+                sami_id="SAMI-303",
+            )
+        }
+        mock_load.return_value = ledger
+        mock_business_hours.side_effect = [
+            (datetime(2026, 3, 13, 18, 30), False, "outside_business_hours"),
+            (datetime(2026, 3, 16, 9, 0), True, None),
+        ]
+        mock_resolve_item.return_value = dummy_item
+        mock_save.return_value = True
+
+        distributor.process_stale_assignment_reloop()
+
+        self.assertEqual(ledger["k1"]["assigned_to"], "m@test.com")
+        self.assertEqual(ledger["k1"]["ts"], original_ts)
+        self.assertNotIn("stale_last_reloop_at", ledger["k1"])
+        mock_resolve_item.assert_not_called()
+        mock_save.assert_not_called()
+
+        distributor.process_stale_assignment_reloop()
+
+        self.assertEqual(ledger["k1"]["assigned_to"], "a@test.com")
+        self.assertEqual(ledger["k1"]["ts"], original_ts)
+        self.assertIn("stale_last_reloop_at", ledger["k1"])
+        self.assertEqual(ledger["k1"]["stale_reloop_count"], 1)
+        self.assertEqual(mock_stats.call_args[1]["event_type"], "STALE_RELOOP")
+        self.assertEqual(mock_stats.call_args[1]["assigned_to"], "a@test.com")
+        self.assertEqual(mock_resolve_item.call_count, 1)
+        mock_save.assert_called_once()
+
+    @patch("distributor.log")
+    @patch("distributor._get_stale_reloop_business_context", return_value=(datetime(2026, 3, 11, 10, 0), True, None))
+    @patch("distributor._get_next_stale_staff_excluding_owner", return_value="brian.shaw@sa.gov.au")
     @patch("distributor._forward_stale_reassign_in_place", return_value=True)
     @patch("distributor._resolve_mailitem_from_ledger_entry")
     @patch("distributor._resolve_stale_reloop_runtime")
@@ -113,7 +270,7 @@ class StaleReloopTests(unittest.TestCase):
     @patch("distributor.load_processed_ledger")
     @patch("distributor.get_staff_list")
     def test_stale_reloop_uses_known_staff_when_assignee_is_off_rotation(
-        self, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_next_staff, mock_log
+        self, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_next_staff, _mock_business_hours, mock_log
     ):
         mock_staff.return_value = ["brian.shaw@sa.gov.au"]
         processed = _DummyProcessed()
@@ -142,6 +299,28 @@ class StaleReloopTests(unittest.TestCase):
         self.assertEqual(mock_stats.call_args[1]["event_type"], "STALE_RELOOP")
         self.assertEqual(mock_stats.call_args[1]["assigned_to"], "brian.shaw@sa.gov.au")
         mock_save.assert_called_once()
+
+    @patch("distributor.save_roster_state")
+    @patch("distributor.get_roster_state", return_value={"current_index": 0, "total_processed": 0})
+    @patch("distributor.get_staff_list", return_value=["alice@test.com", "bob@test.com"])
+    def test_stale_owner_skip_helper_skips_current_owner_when_alternative_exists(
+        self, _mock_staff, mock_state, mock_save
+    ):
+        picked = distributor._get_next_stale_staff_excluding_owner("alice@test.com")
+
+        self.assertEqual(picked, "bob@test.com")
+        mock_save.assert_called_once_with({"current_index": 2, "total_processed": 1})
+
+    @patch("distributor.save_roster_state")
+    @patch("distributor.get_roster_state", return_value={"current_index": 0, "total_processed": 0})
+    @patch("distributor.get_staff_list", return_value=["alice@test.com"])
+    def test_stale_owner_skip_helper_allows_same_owner_when_only_staff_available(
+        self, _mock_staff, mock_state, mock_save
+    ):
+        picked = distributor._get_next_stale_staff_excluding_owner("alice@test.com")
+
+        self.assertEqual(picked, "alice@test.com")
+        mock_save.assert_called_once_with({"current_index": 1, "total_processed": 1})
 
     @patch("distributor.log")
     @patch("distributor._resolve_mailitem_from_ledger_entry")
@@ -201,6 +380,7 @@ class StaleReloopTests(unittest.TestCase):
         mock_save.assert_not_called()
 
     @patch("distributor.log")
+    @patch("distributor._get_stale_reloop_business_context", return_value=(datetime(2026, 3, 11, 10, 0), True, None))
     @patch("distributor._resolve_mailitem_from_ledger_entry")
     @patch("distributor._resolve_stale_reloop_runtime")
     @patch("distributor.append_stats")
@@ -209,7 +389,7 @@ class StaleReloopTests(unittest.TestCase):
     @patch("distributor.get_staff_list")
     @patch("distributor._get_known_staff_for_stale_reloop")
     def test_item_not_found_records_backoff_state(
-        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, mock_log
+        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_business_hours, mock_log
     ):
         mock_known_staff.return_value = {"alice@test.com"}
         mock_staff.return_value = ["alice@test.com"]
@@ -265,6 +445,7 @@ class StaleReloopTests(unittest.TestCase):
         self.assertIn("STALE_RELOOP_DONE scanned=1 stale_candidates=0 changed=False", log_messages)
 
     @patch("distributor.log")
+    @patch("distributor._get_stale_reloop_business_context", return_value=(datetime(2026, 3, 11, 10, 0), True, None))
     @patch("distributor._resolve_mailitem_from_ledger_entry")
     @patch("distributor._resolve_stale_reloop_runtime")
     @patch("distributor.append_stats")
@@ -273,7 +454,7 @@ class StaleReloopTests(unittest.TestCase):
     @patch("distributor.get_staff_list")
     @patch("distributor._get_known_staff_for_stale_reloop")
     def test_item_not_found_retries_after_backoff_expires(
-        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, mock_log
+        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_business_hours, mock_log
     ):
         mock_known_staff.return_value = {"alice@test.com"}
         mock_staff.return_value = ["alice@test.com"]
@@ -334,6 +515,7 @@ class StaleReloopTests(unittest.TestCase):
         mock_save.assert_called_once()
 
     @patch("distributor.log")
+    @patch("distributor._get_stale_reloop_business_context", return_value=(datetime(2026, 3, 11, 10, 0), True, None))
     @patch("distributor.get_next_staff", return_value="a@test.com")
     @patch("distributor._forward_stale_reassign_in_place", return_value=True)
     @patch("distributor._resolve_mailitem_from_ledger_entry")
@@ -344,7 +526,7 @@ class StaleReloopTests(unittest.TestCase):
     @patch("distributor.get_staff_list")
     @patch("distributor._get_known_staff_for_stale_reloop")
     def test_processed_ledger_saved_once_per_pass(
-        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_next_staff, mock_log
+        self, mock_known_staff, mock_staff, mock_load, mock_save, mock_stats, mock_runtime, mock_resolve_item, _mock_forward, _mock_next_staff, _mock_business_hours, mock_log
     ):
         now = datetime.now()
         mock_known_staff.return_value = {"alice@test.com", "bob@test.com", "carol@test.com"}
@@ -415,7 +597,7 @@ class SafeModeTests(unittest.TestCase):
         self.assertEqual(reason, "live_mode_armed")
         self.assertFalse(override_active)
 
-    def test_test_folder_still_requires_override_for_non_production_target(self):
+    def test_test_folder_is_not_suppressed_anymore(self):
         with patch.dict("os.environ", {"TRANSFER_BOT_LIVE": "true", "TRANSFER_BOT_ALLOW_TEST_FOLDER": ""}, clear=False):
             is_safe, reason, override_active = distributor.determine_safe_mode(
                 "Transfer Bot Test Received",
@@ -423,8 +605,8 @@ class SafeModeTests(unittest.TestCase):
                 "Transfer Bot Test",
             )
 
-        self.assertTrue(is_safe)
-        self.assertEqual(reason, "test_folder")
+        self.assertFalse(is_safe)
+        self.assertEqual(reason, "live_mode_armed")
         self.assertFalse(override_active)
 
 
@@ -489,6 +671,6 @@ class RunJobStaleIntegrationTests(unittest.TestCase):
         mock_reassign.assert_called_once()
         mock_stats.assert_not_called()
 
-
 if __name__ == "__main__":
     unittest.main()
+

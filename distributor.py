@@ -106,6 +106,17 @@ STALE_RELOOP_NON_STAFF_ASSIGNEES = {
     "bot", "completed", "error", "hib", "hold", "manager_review",
     "non_actionable", "quarantined", "skipped", "system_notification", "applications_direct"
 }
+NORMAL_ASSIGNMENT_SA_PUBLIC_HOLIDAYS_2026 = {
+    "2026-01-01",
+    "2026-01-26",
+    "2026-03-09",
+    "2026-04-03",
+    "2026-04-06",
+    "2026-06-08",
+    "2026-10-05",
+    "2026-12-25",
+    "2026-12-28",
+}
 JIRA_FOLLOW_UP_FOLDER_PATH = "Inbox/06_JIRA_FOLLOW_UP"
 JIRA_FOLLOW_UP_SUBJECT_PREFIX = "[JIRA FOLLOW-UP] "
 JIRA_FOLLOW_UP_BANNER = (
@@ -1564,6 +1575,25 @@ def _get_stale_reloop_business_context(now_local=None, overrides=None):
 def is_business_hours_now(now_local=None, overrides=None):
     _now_local, allowed, _reason = _get_stale_reloop_business_context(now_local=now_local, overrides=overrides)
     return allowed
+
+def _get_normal_assignment_business_context(now_local=None):
+    now_local, allowed, _reason = _get_stale_reloop_business_context(
+        now_local=now_local,
+        overrides={
+            "stale_reloop_business_start": "08:30",
+            "stale_reloop_business_end": "17:00",
+        },
+    )
+    if not allowed:
+        return now_local, False, "outside_hours"
+    if now_local.date().isoformat() in NORMAL_ASSIGNMENT_SA_PUBLIC_HOLIDAYS_2026:
+        return now_local, False, "public_holiday"
+    return now_local, True, None
+
+def _format_business_hours_skip_subject(subject):
+    cleaned = strip_bot_subject_tags(subject or "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:120]
 
 def _resolve_mailitem_from_ledger_entry(namespace, entry):
     if namespace is None or not isinstance(entry, dict):
@@ -4727,6 +4757,8 @@ def process_inbox():
                     cc_manager = False
                     cc_apps = False
                     is_completion = False
+                    business_hours_skip_reason = ""
+                    business_hours_skip_now = None
 
                     # Get policy addresses
                     policy_manager = manager_cc_addr or ""
@@ -4741,11 +4773,13 @@ def process_inbox():
                         domain_bucket = "hib_noise"
                     elif domain_bucket == "external_image_request":
                         # Class 1: External image requests - round-robin to staff, NO CC
-                        assignee = get_next_staff()
-                        action_taken = "IMAGE_REQUEST_EXTERNAL"
-                        cc_manager = False
-                        cc_apps = False
-                        log(f"IMAGE_REQUEST_EXTERNAL domain={sender_domain} cc_manager=False cc_apps=False", "INFO")
+                        business_hours_skip_now, send_allowed, business_hours_skip_reason = _get_normal_assignment_business_context()
+                        if send_allowed:
+                            assignee = get_next_staff()
+                            action_taken = "IMAGE_REQUEST_EXTERNAL"
+                            cc_manager = False
+                            cc_apps = False
+                            log(f"IMAGE_REQUEST_EXTERNAL domain={sender_domain} cc_manager=False cc_apps=False", "INFO")
 
                     elif domain_bucket == "internal":
                         # Internal domain: check if SAMI support staff
@@ -4758,11 +4792,13 @@ def process_inbox():
                             log(f"COMPLETION reason=SAMI_SUPPORT_STAFF msg_id={msg_id}", "INFO")
                         else:
                             # Non-SAMI internal sender - round-robin to staff
-                            assignee = get_next_staff()
-                            action_taken = "INTERNAL_QUERY"
-                            cc_manager = False
-                            cc_apps = False
-                            log(f"INTERNAL_QUERY domain={sender_domain}", "INFO")
+                            business_hours_skip_now, send_allowed, business_hours_skip_reason = _get_normal_assignment_business_context()
+                            if send_allowed:
+                                assignee = get_next_staff()
+                                action_taken = "INTERNAL_QUERY"
+                                cc_manager = False
+                                cc_apps = False
+                                log(f"INTERNAL_QUERY domain={sender_domain}", "INFO")
 
                     elif domain_bucket == "system_notification":
                         # Class 3: System notifications - silent move, no email
@@ -4785,9 +4821,11 @@ def process_inbox():
 
                     else:
                         # Fallback for any other bucket
-                        assignee = get_next_staff()
-                        action_taken = "FALLBACK_ROUTING"
-                        log(f"FALLBACK_ROUTING domain_bucket={domain_bucket}", "WARN")
+                        business_hours_skip_now, send_allowed, business_hours_skip_reason = _get_normal_assignment_business_context()
+                        if send_allowed:
+                            assignee = get_next_staff()
+                            action_taken = "FALLBACK_ROUTING"
+                            log(f"FALLBACK_ROUTING domain_bucket={domain_bucket}", "WARN")
 
                     # Append match_level to action for audit trail (e.g. IMAGE_REQUEST_EXTERNAL/sender)
                     if match_level and action_taken and action_taken != "hib_noise_suppressed":
@@ -4840,6 +4878,17 @@ def process_inbox():
                         continue
 
                     if not assignee:
+                        if business_hours_skip_reason:
+                            log(
+                                f"BUSINESS_HOURS_SKIP sami_id={message_sami_id or ''} "
+                                f"subject={_format_business_hours_skip_subject(subject_with_id)} "
+                                f"now_local={business_hours_skip_now.isoformat()} "
+                                f"reason={business_hours_skip_reason} "
+                                f"window=Mon-Fri 08:30-17:00 tz=Australia/Adelaide",
+                                "INFO",
+                            )
+                            skipped_count += 1
+                            continue
                         log("No staff available for assignment!", "ERROR")
                         errors_count += 1
                         continue
