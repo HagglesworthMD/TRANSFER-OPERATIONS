@@ -137,6 +137,7 @@ class DummyMessage:
         self.MessageClass = "IPM.Note"
         self.moved_to = None
         self.forwards = []
+        self.save_calls = 0
         self._observed["identity_map"][(self.EntryID, self.StoreID)] = self
 
     def Forward(self):
@@ -170,6 +171,10 @@ class DummyMessage:
         self.StoreID = folder.Store.StoreID
         self._observed["identity_map"][(self.EntryID, self.StoreID)] = self
         return self
+
+    def Save(self):
+        self.save_calls += 1
+        self._observed["events"].append(f"save:{self.EntryID}")
 
 
 class DummyNamespace:
@@ -393,9 +398,11 @@ class AssignmentArchiveRecoveryTests(unittest.TestCase):
         self.assertEqual(observed["moves"], [distributor.CONFIG["processed_folder"]])
         self.assertLess(observed["events"].index(f"forward:{result['original'].EntryID}"), observed["events"].index(f"send:{result['original'].EntryID}"))
         self.assertLess(observed["events"].index(f"send:{result['original'].EntryID}"), observed["events"].index(f"move:{distributor.CONFIG['processed_folder']}"))
+        self.assertLess(observed["events"].index(f"move:{distributor.CONFIG['processed_folder']}"), observed["events"].index(f"save:{archived.EntryID}"))
         self.assertEqual(archived.Subject, "Image transfer request")
         self.assertEqual(archived.Body, "Original body")
-        self.assertTrue(archived.UnRead)
+        self.assertFalse(archived.UnRead)
+        self.assertEqual(archived.save_calls, 1)
         self.assertIs(forward.source_message, result["original"])
         self.assertEqual(forward.Subject, f"[{result['expected_sami']}] Image transfer request")
         self.assertEqual(forward.Recipients.values(), ["brian.shaw@sa.gov.au"])
@@ -573,7 +580,7 @@ class AssignmentArchiveRecoveryTests(unittest.TestCase):
 
         saved_ledger = mock_save_ledger.call_args[0][0]
         self.assertIsNone(archived.moved_to)
-        self.assertTrue(archived.UnRead)
+        self.assertFalse(archived.UnRead)
         self.assertEqual(saved_ledger[message_key]["assigned_to"], "brian.shaw@sa.gov.au")
         self.assertEqual(saved_ledger[message_key]["stale_last_owner"], "brian.shaw@sa.gov.au")
         self.assertEqual(mock_stats.call_args[1]["event_type"], "MANUAL_STALE_RELEASE")
@@ -609,7 +616,7 @@ class AssignmentArchiveRecoveryTests(unittest.TestCase):
 
         saved_ledger = mock_save_ledger.call_args[0][0]
         self.assertIsNone(archived.moved_to)
-        self.assertTrue(archived.UnRead)
+        self.assertFalse(archived.UnRead)
         self.assertEqual(saved_ledger[message_key]["assigned_to"], "brian.shaw@sa.gov.au")
         self.assertEqual(mock_stats.call_args[1]["event_type"], "STALE_RELOOP")
 

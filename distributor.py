@@ -970,6 +970,11 @@ def _archive_assignment_recovery_anchor(msg, processed, sender_email, subject, r
         log(f"ASSIGNMENT_ARCHIVE_FAIL error={e}", "ERROR")
         return None, None
     archived_msg = archived_msg if archived_msg is not None else msg
+    try:
+        archived_msg.UnRead = False
+        archived_msg.Save()
+    except Exception as e:
+        log(f"ASSIGNMENT_ARCHIVE_MARK_READ_FAIL error={e}", "WARN")
     _archive_key, archive_identity = compute_message_identity(
         archived_msg,
         sender_email,
