@@ -236,6 +236,507 @@ def _sender_display_name(email: str) -> str:
     return domain.split(".")[0].title()
 
 
+def _requestor_sender_text(sender: str) -> str:
+    return re.sub(r"\s+", " ", (sender or "").strip())
+
+
+def _normalize_requestor_email(sender: str) -> str:
+    sender_norm = _requestor_sender_text(sender).lower()
+    match = re.search(r"([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})", sender_norm)
+    if match:
+        return match.group(1)
+    return sender_norm if "@" in sender_norm and " " not in sender_norm else ""
+
+
+def _requestor_domain(email: str) -> str:
+    return email.split("@", 1)[1].strip().lower() if email and "@" in email else ""
+
+
+def _requestor_group(email: str, domain: str) -> str:
+    if email:
+        label = _SENDER_DOMAIN_MAP.get(domain)
+        if label:
+            return label
+        sys_domains = _load_system_domains()
+        if domain in sys_domains:
+            return "System"
+        if domain.endswith(".gov.au"):
+            return "Internal"
+        return _sender_display_name(email)
+    return "Unknown"
+
+
+def _requestor_identity(sender: str) -> dict[str, str]:
+    email = _normalize_requestor_email(sender)
+    domain = _requestor_domain(email)
+    requestor_key = email or (f"domain:{domain}" if domain else "unknown")
+    return {
+        "requestor_key": requestor_key,
+        "requestor_email": email,
+        "requestor_domain": domain,
+        "requestor_group": _requestor_group(email, domain),
+    }
+
+
+def _matches_staff_filter(email: str, staff_name: str | None) -> bool:
+    if not staff_name:
+        return True
+    staff_target = staff_name.strip().lower()
+    if not staff_target:
+        return True
+    return staff_target in ((email or "").strip().lower(), _staff_display_name(email).lower())
+
+
+def _resolve_event_ts_for_export(e: dict, kind: str) -> datetime | None:
+    if kind == "assigned":
+        ts = e.get("assigned_ts") or e.get("event_ts")
+    else:
+        ts = e.get("completed_ts") or e.get("event_ts")
+    if ts:
+        return ts
+    date_raw = e.get("date") or e.get("Date")
+    time_raw = e.get("time") or e.get("Time")
+    date_str = date_raw.strip() if isinstance(date_raw, str) else ""
+    time_str = time_raw.strip() if isinstance(time_raw, str) else ""
+    if not date_str or not time_str:
+        return None
+    return _parse_ts(f"{date_str}T{time_str}") or _parse_ts(f"{date_str} {time_str}")
+
+
+def _is_requestor_canonical_event(e: dict) -> bool:
+    event_type = (e.get("event_type") or "").strip().upper()
+    if event_type == "CONFIG_CHANGED":
+        return False
+    if event_type not in ("ASSIGNED", "COMPLETED"):
+        return False
+    action = (e.get("action") or e.get("Action") or "").strip().upper()
+    if event_type.startswith("RECON") or action.startswith("RECON"):
+        return False
+    return bool(_resolve_sami_group_key(e))
+
+
+def _requestor_turnaround_seconds(job: dict[str, Any]) -> float | None:
+    assigned_ts = job.get("assigned_ts")
+    completed_ts = job.get("completed_ts")
+    if not assigned_ts or not completed_ts:
+        return None
+    dur = _business_seconds(assigned_ts, completed_ts)
+    if dur <= 0 or dur > _DURATION_HARD_CAP_SEC or dur > _DURATION_MISMATCH_SEC:
+        return None
+    return dur
+
+
+def _format_requestor_export_ts(ts: datetime | None) -> str:
+    if not ts:
+        return ""
+    return ts.strftime("%Y-%m-%d %H:%M")
+
+
+def export_requestor_stats(
+    rows: list[dict] | None,
+    date_start: str,
+    date_end: str,
+    *,
+    staff_name: str | None = None,
+    activity_mode: str | None = None,
+    activity_staff: str | None = None,
+) -> dict[str, Any]:
+    events = _normalise_rows(rows or [])
+    filtered = [e for e in events if date_start <= (e.get("date") or "") <= date_end]
+
+    jobs: dict[str, dict[str, Any]] = {}
+    for e in events:
+        if not _is_requestor_canonical_event(e):
+            continue
+        key = _resolve_sami_group_key(e)
+        event_type = (e.get("event_type") or "").strip().upper()
+        job = jobs.setdefault(
+            key,
+            {
+                "assigned_ts": None,
+                "completed_ts": None,
+                "assigned_event": None,
+                "has_completed": False,
+            },
+        )
+        if event_type == "ASSIGNED":
+            assigned_ts = _resolve_event_ts_for_export(e, "assigned")
+            if assigned_ts and (job["assigned_ts"] is None or assigned_ts < job["assigned_ts"]):
+                job["assigned_ts"] = assigned_ts
+                job["assigned_event"] = e
+        elif event_type == "COMPLETED":
+            completed_ts = _resolve_event_ts_for_export(e, "completed")
+            if completed_ts and (job["completed_ts"] is None or completed_ts < job["completed_ts"]):
+                job["completed_ts"] = completed_ts
+                job["has_completed"] = True
+
+    assigned_keys_in_range: set[str] = set()
+    jira_followup_keys_in_range: set[str] = set()
+    for e in filtered:
+        key = _resolve_sami_group_key(e)
+        if not key:
+            continue
+        event_type = (e.get("event_type") or "").strip().upper()
+        action = (e.get("action") or e.get("Action") or "").strip().upper()
+        if event_type == "ASSIGNED" and _is_requestor_canonical_event(e):
+            assigned_keys_in_range.add(key)
+        if event_type == "JIRA_FOLLOWUP_ASSIGNED" or action == "JIRA_FOLLOWUP":
+            jira_followup_keys_in_range.add(key)
+
+    by_requestor: dict[str, dict[str, Any]] = {}
+    group_rows: dict[str, dict[str, Any]] = {}
+    radsa_domains: dict[str, dict[str, Any]] = {}
+    overall_durations: list[float] = []
+    daily_rollup: dict[str, dict[str, Any]] = {}
+    monthly_rollup: dict[str, dict[str, Any]] = {}
+    hourly_rollup: dict[str, dict[str, Any]] = {
+        f"{hour:02d}:00": {"hour": f"{hour:02d}:00", "total_jobs": 0, "completed_jobs": 0, "open_jobs": 0, "urgent_count": 0, "critical_count": 0}
+        for hour in range(24)
+    }
+
+    for key in sorted(assigned_keys_in_range):
+        job = jobs.get(key)
+        if not job:
+            continue
+        assigned_event = job.get("assigned_event")
+        if not isinstance(assigned_event, dict):
+            continue
+
+        assigned_email = (assigned_event.get("assigned_to") or "").strip().lower()
+        if not _is_staff(assigned_email):
+            continue
+        if not _matches_staff_filter(assigned_email, staff_name):
+            continue
+        if activity_mode == "jira_followups":
+            if key not in jira_followup_keys_in_range:
+                continue
+            if activity_staff and not _matches_staff_filter(assigned_email, activity_staff):
+                continue
+
+        ident = _requestor_identity(assigned_event.get("sender") or "")
+        row = by_requestor.setdefault(
+            ident["requestor_key"],
+            {
+                **ident,
+                "total_jobs": 0,
+                "open_jobs": 0,
+                "completed_jobs": 0,
+                "urgent_count": 0,
+                "critical_count": 0,
+                "durations": [],
+                "first_seen_dt": None,
+                "last_seen_dt": None,
+                "assigned_to_counts": defaultdict(int),
+                "recent_sami_ids": [],
+                "recent_subjects": [],
+            },
+        )
+
+        row["total_jobs"] += 1
+        risk_level = (assigned_event.get("risk_level") or "").strip().lower()
+        if risk_level == "urgent":
+            row["urgent_count"] += 1
+        elif risk_level == "critical":
+            row["critical_count"] += 1
+
+        assigned_ts = job.get("assigned_ts") or assigned_event.get("event_ts")
+        assigned_date = assigned_ts.strftime("%Y-%m-%d") if assigned_ts else ((assigned_event.get("date") or "").strip())
+        assigned_month = assigned_ts.strftime("%Y-%m") if assigned_ts else assigned_date[:7]
+        assigned_hour = f"{assigned_ts.hour:02d}:00" if assigned_ts else ""
+        if assigned_ts and (row["first_seen_dt"] is None or assigned_ts < row["first_seen_dt"]):
+            row["first_seen_dt"] = assigned_ts
+        if assigned_ts and (row["last_seen_dt"] is None or assigned_ts > row["last_seen_dt"]):
+            row["last_seen_dt"] = assigned_ts
+
+        if assigned_email:
+            row["assigned_to_counts"][assigned_email] += 1
+
+        if assigned_date:
+            daily = daily_rollup.setdefault(
+                assigned_date,
+                {
+                    "date": assigned_date,
+                    "total_jobs": 0,
+                    "completed_jobs": 0,
+                    "open_jobs": 0,
+                    "urgent_count": 0,
+                    "critical_count": 0,
+                    "requestors": set(),
+                },
+            )
+            daily["total_jobs"] += 1
+            daily["requestors"].add(ident["requestor_key"])
+            if risk_level == "urgent":
+                daily["urgent_count"] += 1
+            elif risk_level == "critical":
+                daily["critical_count"] += 1
+        if assigned_month:
+            monthly = monthly_rollup.setdefault(
+                assigned_month,
+                {
+                    "month": assigned_month,
+                    "total_jobs": 0,
+                    "completed_jobs": 0,
+                    "open_jobs": 0,
+                    "urgent_count": 0,
+                    "critical_count": 0,
+                    "requestors": set(),
+                },
+            )
+            monthly["total_jobs"] += 1
+            monthly["requestors"].add(ident["requestor_key"])
+            if risk_level == "urgent":
+                monthly["urgent_count"] += 1
+            elif risk_level == "critical":
+                monthly["critical_count"] += 1
+        hourly = hourly_rollup.get(assigned_hour) if assigned_hour else None
+        if hourly is not None:
+            hourly["total_jobs"] += 1
+            if risk_level == "urgent":
+                hourly["urgent_count"] += 1
+            elif risk_level == "critical":
+                hourly["critical_count"] += 1
+
+        if job.get("has_completed") and job.get("completed_ts") and date_start <= job["completed_ts"].strftime("%Y-%m-%d") <= date_end:
+            row["completed_jobs"] += 1
+            dur = _requestor_turnaround_seconds(job)
+            if dur is not None:
+                row["durations"].append(dur)
+                overall_durations.append(dur)
+            if assigned_date:
+                daily_rollup[assigned_date]["completed_jobs"] += 1
+            if assigned_month:
+                monthly_rollup[assigned_month]["completed_jobs"] += 1
+            if hourly is not None:
+                hourly["completed_jobs"] += 1
+        else:
+            row["open_jobs"] += 1
+            if assigned_date:
+                daily_rollup[assigned_date]["open_jobs"] += 1
+            if assigned_month:
+                monthly_rollup[assigned_month]["open_jobs"] += 1
+            if hourly is not None:
+                hourly["open_jobs"] += 1
+
+        sami_ref = _display_sami_ref(assigned_event)
+        if sami_ref and sami_ref not in row["recent_sami_ids"]:
+            row["recent_sami_ids"].append(sami_ref)
+        subject = (assigned_event.get("subject") or "").strip()
+        if subject and subject not in row["recent_subjects"]:
+            row["recent_subjects"].append(subject)
+
+    requestor_rows: list[dict[str, Any]] = []
+    for row in by_requestor.values():
+        durations = sorted(d for d in row.pop("durations") if d is not None)
+        median_sec = round(_median(durations), 1) if durations else 0
+        p90_sec = round(_percentile(durations, 0.9), 1) if durations else 0
+        avg_sec = round(sum(durations) / len(durations), 1) if durations else 0
+        assigned_to_counts = row.pop("assigned_to_counts")
+        assigned_to_breakdown = "; ".join(
+            f"{_staff_display_name(email)} ({count})"
+            for email, count in sorted(assigned_to_counts.items(), key=lambda item: (-item[1], _staff_display_name(item[0])))[:5]
+        )
+        requestor_row = {
+            **row,
+            "median_turnaround_sec": median_sec,
+            "median_turnaround_human": format_duration_human(median_sec) if median_sec else "",
+            "p90_turnaround_sec": p90_sec,
+            "p90_turnaround_human": format_duration_human(p90_sec) if p90_sec else "",
+            "avg_turnaround_sec": avg_sec,
+            "avg_turnaround_human": format_duration_human(avg_sec) if avg_sec else "",
+            "first_seen": _format_requestor_export_ts(row.get("first_seen_dt")),
+            "last_seen": _format_requestor_export_ts(row.get("last_seen_dt")),
+            "assigned_to_breakdown": assigned_to_breakdown,
+            "recent_sami_ids": "; ".join(row["recent_sami_ids"][:5]),
+            "recent_subjects_summary": " | ".join(row["recent_subjects"][:3]),
+        }
+        requestor_row.pop("first_seen_dt", None)
+        requestor_row.pop("last_seen_dt", None)
+        requestor_row.pop("recent_subjects", None)
+        requestor_row.pop("recent_sami_ids", None)
+        requestor_rows.append(requestor_row)
+
+        group = requestor_row["requestor_group"] or "Unknown"
+        group_row = group_rows.setdefault(
+            group,
+            {
+                "requestor_group": group,
+                "requestor_count": 0,
+                "total_jobs": 0,
+                "open_jobs": 0,
+                "completed_jobs": 0,
+                "urgent_count": 0,
+                "critical_count": 0,
+                "durations": [],
+            },
+        )
+        group_row["requestor_count"] += 1
+        group_row["total_jobs"] += requestor_row["total_jobs"]
+        group_row["open_jobs"] += requestor_row["open_jobs"]
+        group_row["completed_jobs"] += requestor_row["completed_jobs"]
+        group_row["urgent_count"] += requestor_row["urgent_count"]
+        group_row["critical_count"] += requestor_row["critical_count"]
+        group_row["durations"].extend(durations)
+
+        if group == "RadSA":
+            domain_key = requestor_row["requestor_domain"] or "unknown"
+            domain_row = radsa_domains.setdefault(
+                domain_key,
+                {
+                    "requestor_domain": domain_key,
+                    "requestor_count": 0,
+                    "total_jobs": 0,
+                    "open_jobs": 0,
+                    "completed_jobs": 0,
+                    "urgent_count": 0,
+                    "critical_count": 0,
+                    "durations": [],
+                },
+            )
+            domain_row["requestor_count"] += 1
+            domain_row["total_jobs"] += requestor_row["total_jobs"]
+            domain_row["open_jobs"] += requestor_row["open_jobs"]
+            domain_row["completed_jobs"] += requestor_row["completed_jobs"]
+            domain_row["urgent_count"] += requestor_row["urgent_count"]
+            domain_row["critical_count"] += requestor_row["critical_count"]
+            domain_row["durations"].extend(durations)
+
+    requestor_rows.sort(key=lambda item: (-item["total_jobs"], item["requestor_key"]))
+
+    def _finalize_group_rows(items: dict[str, dict[str, Any]], key_name: str) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for _, item in sorted(items.items(), key=lambda pair: (-pair[1]["total_jobs"], pair[0])):
+            durations = sorted(d for d in item.pop("durations") if d is not None)
+            median_sec = round(_median(durations), 1) if durations else 0
+            p90_sec = round(_percentile(durations, 0.9), 1) if durations else 0
+            avg_sec = round(sum(durations) / len(durations), 1) if durations else 0
+            out.append(
+                {
+                    key_name: item[key_name],
+                    "requestor_count": item["requestor_count"],
+                    "total_jobs": item["total_jobs"],
+                    "open_jobs": item["open_jobs"],
+                    "completed_jobs": item["completed_jobs"],
+                    "urgent_count": item["urgent_count"],
+                    "critical_count": item["critical_count"],
+                    "median_turnaround_sec": median_sec,
+                    "median_turnaround_human": format_duration_human(median_sec) if median_sec else "",
+                    "p90_turnaround_sec": p90_sec,
+                    "p90_turnaround_human": format_duration_human(p90_sec) if p90_sec else "",
+                    "avg_turnaround_sec": avg_sec,
+                    "avg_turnaround_human": format_duration_human(avg_sec) if avg_sec else "",
+                }
+            )
+        return out
+
+    requestor_groups = _finalize_group_rows(group_rows, "requestor_group")
+    radsa_domain_rows = _finalize_group_rows(radsa_domains, "requestor_domain")
+
+    daily_rows = []
+    for date, item in sorted(daily_rollup.items()):
+        daily_rows.append(
+            {
+                "date": date,
+                "total_jobs": item["total_jobs"],
+                "completed_jobs": item["completed_jobs"],
+                "open_jobs": item["open_jobs"],
+                "urgent_count": item["urgent_count"],
+                "critical_count": item["critical_count"],
+                "requestor_count": len(item["requestors"]),
+            }
+        )
+
+    monthly_rows = []
+    prev_total_jobs = None
+    for month, item in sorted(monthly_rollup.items()):
+        if prev_total_jobs is None:
+            jobs_change_count = 0
+            jobs_change_pct = ""
+            direction = "flat"
+        else:
+            jobs_change_count = item["total_jobs"] - prev_total_jobs
+            if prev_total_jobs > 0:
+                jobs_change_pct = round((jobs_change_count / prev_total_jobs) * 100.0, 1)
+            else:
+                jobs_change_pct = ""
+            direction = "up" if jobs_change_count > 0 else "down" if jobs_change_count < 0 else "flat"
+        prev_total_jobs = item["total_jobs"]
+        monthly_rows.append(
+            {
+                "month": month,
+                "total_jobs": item["total_jobs"],
+                "completed_jobs": item["completed_jobs"],
+                "open_jobs": item["open_jobs"],
+                "urgent_count": item["urgent_count"],
+                "critical_count": item["critical_count"],
+                "requestor_count": len(item["requestors"]),
+                "jobs_change_count": jobs_change_count,
+                "jobs_change_pct": jobs_change_pct,
+                "direction": direction,
+            }
+        )
+
+    max_hourly_jobs = max((row["total_jobs"] for row in hourly_rollup.values()), default=0)
+    positive_hour_counts = sorted({row["total_jobs"] for row in hourly_rollup.values() if row["total_jobs"] > 0})
+    slow_threshold = positive_hour_counts[0] if positive_hour_counts else 0
+    hourly_rows = []
+    for hour, item in sorted(hourly_rollup.items()):
+        load_band = ""
+        if item["total_jobs"] > 0 and item["total_jobs"] == max_hourly_jobs:
+            load_band = "peak"
+        elif item["total_jobs"] > 0 and item["total_jobs"] == slow_threshold:
+            load_band = "slow"
+        hourly_rows.append(
+            {
+                "hour": hour,
+                "total_jobs": item["total_jobs"],
+                "completed_jobs": item["completed_jobs"],
+                "open_jobs": item["open_jobs"],
+                "urgent_count": item["urgent_count"],
+                "critical_count": item["critical_count"],
+                "load_band": load_band,
+            }
+        )
+
+    peak_day = max(daily_rows, key=lambda row: row["total_jobs"], default=None)
+    slow_day = min((row for row in daily_rows if row["total_jobs"] > 0), key=lambda row: row["total_jobs"], default=None)
+    peak_hour = max(hourly_rows, key=lambda row: row["total_jobs"], default=None)
+    slow_hour = min((row for row in hourly_rows if row["total_jobs"] > 0), key=lambda row: row["total_jobs"], default=None)
+    peak_month = max(monthly_rows, key=lambda row: row["total_jobs"], default=None)
+    slow_month = min((row for row in monthly_rows if row["total_jobs"] > 0), key=lambda row: row["total_jobs"], default=None)
+
+    summary_rows = [
+        {"metric": "date_start", "value": date_start},
+        {"metric": "date_end", "value": date_end},
+        {"metric": "total_requestors", "value": len(requestor_rows)},
+        {"metric": "total_jobs", "value": sum(row["total_jobs"] for row in requestor_rows)},
+        {"metric": "total_open_jobs", "value": sum(row["open_jobs"] for row in requestor_rows)},
+        {"metric": "total_completed_jobs", "value": sum(row["completed_jobs"] for row in requestor_rows)},
+        {"metric": "total_urgent", "value": sum(row["urgent_count"] for row in requestor_rows)},
+        {"metric": "total_critical", "value": sum(row["critical_count"] for row in requestor_rows)},
+        {"metric": "overall_median_turnaround_sec", "value": round(_median(sorted(overall_durations)), 1) if overall_durations else 0},
+        {"metric": "overall_median_turnaround_human", "value": format_duration_human(_median(sorted(overall_durations))) if overall_durations else ""},
+        {"metric": "overall_p90_turnaround_sec", "value": round(_percentile(sorted(overall_durations), 0.9), 1) if overall_durations else 0},
+        {"metric": "overall_p90_turnaround_human", "value": format_duration_human(_percentile(sorted(overall_durations), 0.9)) if overall_durations else ""},
+        {"metric": "peak_day", "value": peak_day["date"] if peak_day else ""},
+        {"metric": "slow_day", "value": slow_day["date"] if slow_day else ""},
+        {"metric": "peak_hour", "value": peak_hour["hour"] if peak_hour else ""},
+        {"metric": "slow_hour", "value": slow_hour["hour"] if slow_hour else ""},
+        {"metric": "peak_month", "value": peak_month["month"] if peak_month else ""},
+        {"metric": "slow_month", "value": slow_month["month"] if slow_month else ""},
+    ]
+
+    return {
+        "summary_rows": summary_rows,
+        "requestor_rows": requestor_rows,
+        "requestor_groups": requestor_groups,
+        "radsa_domain_rows": radsa_domain_rows,
+        "daily_rows": daily_rows,
+        "monthly_rows": monthly_rows,
+        "hourly_rows": hourly_rows,
+    }
+
+
 def _compute_hib_burst_status(hib_state: dict | None) -> dict:
     """Compute HIB burst status from hib_watchdog.json state.
 

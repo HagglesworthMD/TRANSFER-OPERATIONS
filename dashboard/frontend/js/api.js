@@ -177,6 +177,10 @@ const DashboardAPI = {
         return `${this.base}/api/sami-export${s ? `?${s}` : ''}`;
     },
 
+    getRequestorStatsUrl(params) {
+        return `${this.base}/api/requestor-stats/export${this._toQuery(params)}`;
+    },
+
     async getStaffActive(email, params) {
         const qs = this._toQuery(params);
         const res = await fetch(`${this.base}/api/staff/${encodeURIComponent(email)}/active${qs}`);

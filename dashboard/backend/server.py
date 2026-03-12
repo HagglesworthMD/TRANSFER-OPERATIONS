@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from . import config
 from .data_reader import get_file_info, load_csv, load_json
-from .kpi_engine import compute_dashboard, export_active_events, export_staff_events
+from .kpi_engine import compute_dashboard, export_active_events, export_requestor_stats, export_staff_events
 from .reconciliation import load_reconciled, load_reconciled_set, add_reconciled, add_reconciled_bulk, remove_reconciled
 
 logging.basicConfig(
@@ -462,6 +462,18 @@ def _spreadsheetml_style(kind: str, field: str, value) -> str:
         if field == 'Assigned to Completed' and text.endswith('hrs'):
             return 'duration_long'
         return 'summary_cell'
+    if field in ('direction',):
+        if upper == 'UP':
+            return 'flag_yes'
+        if upper == 'DOWN':
+            return 'status_open'
+        return 'cell_center'
+    if field in ('load_band',):
+        if upper == 'PEAK':
+            return 'count_highlight'
+        if upper == 'SLOW':
+            return 'flag_no'
+        return 'cell_center'
     if field in ('Event Type', 'Type'):
         if upper == 'ASSIGNED':
             return 'event_assigned'
@@ -474,9 +486,9 @@ def _spreadsheetml_style(kind: str, field: str, value) -> str:
         return 'flag_yes' if text == 'yes' else 'flag_no'
     if field == 'Duration' and text.endswith('hrs'):
         return 'duration_long'
-    if field in ('Subject', 'Note', 'Body'):
+    if field in ('Subject', 'Note', 'Body', 'assigned_to_breakdown', 'recent_subjects_summary'):
         return 'cell_wrap'
-    if field in ('Event #', 'Assigned Count', 'Completed Count', 'Follow Up Count', 'Total Events'):
+    if field in ('Event #', 'Assigned Count', 'Completed Count', 'Follow Up Count', 'Total Events', 'jobs_change_count', 'jobs_change_pct', 'total_jobs', 'completed_jobs', 'open_jobs', 'urgent_count', 'critical_count', 'requestor_count'):
         return 'cell_center'
     return 'cell'
 
@@ -492,6 +504,22 @@ def _spreadsheetml_width(field: str, values: list[object]) -> int:
         'Staff Email': 28,
         'Subject': 48,
         'Action': 26,
+        'requestor_key': 28,
+        'requestor_email': 28,
+        'requestor_domain': 24,
+        'requestor_group': 18,
+        'first_seen': 20,
+        'last_seen': 20,
+        'date': 14,
+        'month': 12,
+        'hour': 10,
+        'assigned_to_breakdown': 34,
+        'recent_sami_ids': 28,
+        'recent_subjects_summary': 48,
+        'direction': 10,
+        'load_band': 10,
+        'metric': 28,
+        'value': 18,
     }
     max_len = max([len(field)] + [len('' if v is None else str(v)) for v in values])
     chars = max(preferred.get(field, 12), min(max_len + 2, 48))
@@ -650,6 +678,128 @@ def _build_staff_export_workbook(staff_name: str, events: list[dict], date_start
         '</Styles>'
         + _build_spreadsheetml_worksheet('Staff Summary', summary_fields, [summary_row], 'summary')
         + _build_spreadsheetml_worksheet('Staff Timeline', timeline_fields, events, 'timeline')
+        + '</Workbook>'
+    )
+    return xml.encode('utf-8')
+
+
+def _build_requestor_stats_workbook(date_start: str, date_end: str, export_data: dict[str, list[dict]]) -> bytes:
+    summary_fields = ["metric", "value"]
+    requestor_fields = [
+        "requestor_key",
+        "requestor_email",
+        "requestor_domain",
+        "requestor_group",
+        "total_jobs",
+        "open_jobs",
+        "completed_jobs",
+        "urgent_count",
+        "critical_count",
+        "median_turnaround_sec",
+        "median_turnaround_human",
+        "p90_turnaround_sec",
+        "p90_turnaround_human",
+        "avg_turnaround_sec",
+        "avg_turnaround_human",
+        "first_seen",
+        "last_seen",
+        "assigned_to_breakdown",
+        "recent_sami_ids",
+        "recent_subjects_summary",
+    ]
+    group_fields = [
+        "requestor_group",
+        "requestor_count",
+        "total_jobs",
+        "open_jobs",
+        "completed_jobs",
+        "urgent_count",
+        "critical_count",
+        "median_turnaround_sec",
+        "median_turnaround_human",
+        "p90_turnaround_sec",
+        "p90_turnaround_human",
+        "avg_turnaround_sec",
+        "avg_turnaround_human",
+    ]
+    daily_fields = [
+        "date",
+        "total_jobs",
+        "completed_jobs",
+        "open_jobs",
+        "urgent_count",
+        "critical_count",
+        "requestor_count",
+    ]
+    monthly_fields = [
+        "month",
+        "total_jobs",
+        "completed_jobs",
+        "open_jobs",
+        "urgent_count",
+        "critical_count",
+        "requestor_count",
+        "jobs_change_count",
+        "jobs_change_pct",
+        "direction",
+    ]
+    hourly_fields = [
+        "hour",
+        "total_jobs",
+        "completed_jobs",
+        "open_jobs",
+        "urgent_count",
+        "critical_count",
+        "load_band",
+    ]
+    summary_rows = export_data.get("summary_rows") or [
+        {"metric": "date_start", "value": date_start},
+        {"metric": "date_end", "value": date_end},
+    ]
+    requestor_rows = export_data.get("requestor_rows") or []
+    group_rows = export_data.get("requestor_groups") or []
+    daily_rows = export_data.get("daily_rows") or []
+    monthly_rows = export_data.get("monthly_rows") or []
+    hourly_rows = export_data.get("hourly_rows") or []
+
+    xml = (
+        '<?xml version="1.0"?>'
+        '<?mso-application progid="Excel.Sheet"?>'
+        '<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" '
+        'xmlns:o="urn:schemas-microsoft-com:office:office" '
+        'xmlns:x="urn:schemas-microsoft-com:office:excel" '
+        'xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet" '
+        'xmlns:html="http://www.w3.org/TR/REC-html40">'
+        '<DocumentProperties xmlns="urn:schemas-microsoft-com:office:office">'
+        '<Title>Requestor Stats Export</Title>'
+        '<Author>TRANSFER-BOT Dashboard</Author>'
+        '</DocumentProperties>'
+        '<ExcelWorkbook xmlns="urn:schemas-microsoft-com:office:excel"><ProtectStructure>False</ProtectStructure><ProtectWindows>False</ProtectWindows></ExcelWorkbook>'
+        '<Styles>'
+        '<Style ss:ID="Default" ss:Name="Normal"><Alignment ss:Vertical="Center"/><Borders/><Font ss:FontName="Calibri" ss:Size="11"/><Interior/><NumberFormat/><Protection/></Style>'
+        '<Style ss:ID="header"><Alignment ss:Vertical="Center" ss:Horizontal="Center" ss:WrapText="1"/><Font ss:Bold="1" ss:Color="#FFFFFF" ss:FontName="Calibri" ss:Size="11"/><Interior ss:Color="#16324F" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="summary_cell"><Alignment ss:Vertical="Center" ss:WrapText="1"/><Font ss:FontName="Calibri" ss:Size="11"/><Interior ss:Color="#F4F8FC" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="cell"><Alignment ss:Vertical="Center"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'
+        '<Style ss:ID="cell_center"><Alignment ss:Vertical="Center" ss:Horizontal="Center"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'
+        '<Style ss:ID="cell_wrap"><Alignment ss:Vertical="Center" ss:WrapText="1"/><Font ss:FontName="Calibri" ss:Size="11"/></Style>'
+        '<Style ss:ID="status_open"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#7F1D1D"/><Interior ss:Color="#FEE2E2" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="status_closed"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#14532D"/><Interior ss:Color="#DCFCE7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="status_completed_only"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#1D4ED8"/><Interior ss:Color="#DBEAFE" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="status_unknown"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#92400E"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="flag_yes"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#166534"/><Interior ss:Color="#DCFCE7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="flag_no"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Color="#475569"/><Interior ss:Color="#E2E8F0" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="event_assigned"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#1D4ED8"/><Interior ss:Color="#DBEAFE" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="event_completed"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#166534"/><Interior ss:Color="#DCFCE7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="event_follow_up"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#92400E"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="duration_long"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#5B21B6"/><Interior ss:Color="#EDE9FE" ss:Pattern="Solid"/></Style>'
+        '<Style ss:ID="count_highlight"><Alignment ss:Horizontal="Center" ss:Vertical="Center"/><Font ss:Bold="1" ss:Color="#92400E"/><Interior ss:Color="#FEF3C7" ss:Pattern="Solid"/></Style>'
+        '</Styles>'
+        + _build_spreadsheetml_worksheet('Requestor Summary', summary_fields, summary_rows, 'summary')
+        + _build_spreadsheetml_worksheet('Requestor Stats', requestor_fields, requestor_rows, 'timeline')
+        + _build_spreadsheetml_worksheet('Requestor Groups', group_fields, group_rows, 'timeline')
+        + _build_spreadsheetml_worksheet('Daily Trends', daily_fields, daily_rows, 'timeline')
+        + _build_spreadsheetml_worksheet('Monthly Trends', monthly_fields, monthly_rows, 'timeline')
+        + _build_spreadsheetml_worksheet('Hourly Activity', hourly_fields, hourly_rows, 'timeline')
         + '</Workbook>'
     )
     return xml.encode('utf-8')
@@ -1262,6 +1412,79 @@ async def sami_export(sami_ref: str):
 
     safe_ref = re.sub(r"[^a-zA-Z0-9_\-]+", "_", target)
     filename = f"{safe_ref}_audit.xls"
+
+    return StreamingResponse(
+        iter([workbook]),
+        media_type="application/vnd.ms-excel",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/requestor-stats/export")
+async def requestor_stats_export(
+    date_start: str | None = None,
+    date_end: str | None = None,
+    staff: str | None = None,
+    activity_mode: str | None = None,
+    activity_staff: str | None = None,
+):
+    rows, _ = load_csv(_resolve_stats_csv_path())
+    rec_set = load_reconciled_set()
+
+    if not date_start and not date_end:
+        ds = "2000-01-01"
+        de = "2099-12-31"
+        filename = "requestor_stats_all_time.xls"
+    else:
+        ds = date_start or "2000-01-01"
+        de = date_end or "2099-12-31"
+        filename = f"requestor_stats_{ds}_{de}.xls"
+
+    export_data = export_requestor_stats(
+        rows or [],
+        ds,
+        de,
+        staff_name=staff,
+        activity_mode=activity_mode,
+        activity_staff=activity_staff,
+    )
+    dashboard_summary = compute_dashboard(
+        rows or [],
+        roster_state=None,
+        settings=None,
+        staff_list=None,
+        hib_state=None,
+        date_start=ds,
+        date_end=de,
+        staff_filter=staff,
+        reconciled_set=rec_set,
+        activity_mode=activity_mode,
+        activity_staff=activity_staff,
+    ).get("summary", {})
+    summary_rows = export_data.get("summary_rows") or []
+    for row in summary_rows:
+        metric = row.get("metric")
+        if metric == "total_jobs":
+            row["value"] = dashboard_summary.get("processed_in_range", dashboard_summary.get("processed_today", row.get("value")))
+        elif metric == "total_open_jobs":
+            row["value"] = dashboard_summary.get("active_count", row.get("value"))
+        elif metric == "total_completed_jobs":
+            row["value"] = dashboard_summary.get("completions_today", row.get("value"))
+    if not date_start and not date_end:
+        daily_rows = export_data.get("daily_rows") or []
+        if daily_rows:
+            first_date = daily_rows[0].get("date") or ""
+            last_date = daily_rows[-1].get("date") or ""
+        else:
+            first_date = ""
+            last_date = ""
+        summary_rows = export_data.get("summary_rows") or []
+        for row in summary_rows:
+            if row.get("metric") == "date_start":
+                row["value"] = first_date
+            elif row.get("metric") == "date_end":
+                row["value"] = last_date
+    workbook = _build_requestor_stats_workbook(ds, de, export_data)
 
     return StreamingResponse(
         iter([workbook]),

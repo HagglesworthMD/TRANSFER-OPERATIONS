@@ -37,6 +37,7 @@ const ActivityFeed = {
         const showActiveBtn = document.getElementById('show-active-btn');
         const samiSearchInput = document.getElementById('sami-search-input');
         const samiExportBtn = document.getElementById('sami-export-btn');
+        const requestorStatsBtn = document.getElementById('requestor-stats-btn');
         const activeCloseBtn = document.getElementById('active-close-btn');
         const activeBackdrop = document.getElementById('active-modal-backdrop');
         const activeDownloadBtn = document.getElementById('active-download-btn');
@@ -74,6 +75,13 @@ const ActivityFeed = {
         };
         if (samiExportBtn) {
             samiExportBtn.addEventListener('click', runSamiExport);
+        }
+        if (requestorStatsBtn) {
+            requestorStatsBtn.addEventListener('click', () => {
+                const params = this._currentDateParams() || {};
+                const url = DashboardAPI.getRequestorStatsUrl(params);
+                window.open(url, '_blank');
+            });
         }
         if (samiSearchInput) {
             samiSearchInput.addEventListener('keydown', (e) => {
